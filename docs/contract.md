@@ -178,8 +178,16 @@ the socket peer; drop `CF-Connecting-IP`.
    `/api/hassio_ingress/<token>/`, sends exactly those uploads (same origin, that ingress root's
    `api/media/<64 hex>`, no query) as `POST` with `X-OpenGym-Method: PUT`. For the ingress peer
    only, a `POST` to `^/api/media/[0-9a-f]{64}$` with `X-OpenGym-Method: PUT` goes to nginx as
-   `PUT`; nothing else changes method. Upstream's CSRF check and its media checks (type sniff,
-   sha256, size and length caps) then run on that `PUT` as usual.
+   `PUT`; nothing else changes method. The Supervisor streams that `POST` with no length, and
+   upstream books a body of unknown size at its kind's full cap against the quota
+   (`api/media.js` `need = len ?? cap`), so the script also sends `X-OpenGym-Length: <Blob.size>`.
+   When the request has no `Content-Length` of its own and the value matches `^[0-9]{1,10}$`, the
+   rewritten `PUT` carries it as `Content-Length` and the body is held to exactly that many
+   bytes: a longer body is cut off before the extra byte, the last chunk is held back until the
+   body ends, and a mismatch is `400 {"error":"the upload was not the size it said it was"}` with
+   the upstream request aborted. Both headers are dropped from every request. Upstream's CSRF
+   check and its media checks (type sniff, sha256, size, length and quota) then run on that `PUT`
+   exactly as on a direct upload.
 
 **Other peers:** `RESOLVED_DIRECT_ACCESS=true` → proxy untouched (upstream sign-in and headers
 apply). Off → `403` JSON `{"error":"Direct access is turned off. Open openGym from the Home

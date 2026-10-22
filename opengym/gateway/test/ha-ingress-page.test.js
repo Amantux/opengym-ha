@@ -14,6 +14,7 @@ function page(href) {
   class FakeXHR {
     open(method, url) { this.method = method; this.url = url; this.headers = {}; sent.push(this); }
     setRequestHeader(k, v) { this.headers[k] = v; }
+    send(body) { this.body = body; }
   }
   const location = new URL(href);
   const window = { XMLHttpRequest: FakeXHR };
@@ -24,16 +25,26 @@ function page(href) {
   return { XHR: FakeXHR, sent };
 }
 
-const upload = (XHR, method, url) => { const x = new XHR(); x.open(method, url); return x; };
+// A Blob is all the script looks at: its size.
+const upload = (XHR, method, url, body = { size: 1234 }) => { const x = new XHR(); x.open(method, url); x.send(body); return x; };
 
 test('under ingress, a media PUT goes out as POST with X-OpenGym-Method: PUT', () => {
   const { XHR } = page(`https://ha.example:8123${TOKEN_PATH}#/exercises`);
   for (const url of [`${TOKEN_PATH}api/media/${HASH}`, `https://ha.example:8123${TOKEN_PATH}api/media/${HASH}`]) {
     const x = upload(XHR, 'PUT', url);
     assert.equal(x.method, 'POST', url);
-    assert.deepEqual(x.headers, { 'X-OpenGym-Method': 'PUT' }, url);
+    assert.deepEqual(x.headers, { 'X-OpenGym-Method': 'PUT', 'X-OpenGym-Length': '1234' }, url);
+    assert.deepEqual(x.body, { size: 1234 }, 'the body itself goes out unchanged');
   }
   assert.equal(upload(XHR, 'put', `${TOKEN_PATH}api/media/${HASH}`).method, 'POST');
+  // A body without a size gets no length: the gateway then sends it on chunked.
+  assert.deepEqual(upload(XHR, 'PUT', `${TOKEN_PATH}api/media/${HASH}`, 'text').headers, { 'X-OpenGym-Method': 'PUT' });
+  // An XHR re-opened for something else is not still tunnelled.
+  const x = new XHR();
+  x.open('PUT', `${TOKEN_PATH}api/media/${HASH}`);
+  x.open('PUT', `${TOKEN_PATH}api/data`);
+  x.send({ size: 9 });
+  assert.equal(x.headers['X-OpenGym-Length'], undefined);
 });
 
 test('everything else is left exactly as the app opened it', () => {

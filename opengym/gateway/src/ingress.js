@@ -50,6 +50,21 @@ export function ingressMethod(method, pathname, headers) {
   return method === 'POST' && headers[METHOD_HEADER] === 'PUT' && MEDIA_UPLOAD.test(pathname) ? 'PUT' : method;
 }
 
+// The Supervisor streams such a POST with no Content-Length, and upstream's media store books
+// a body of unknown size at the full cap for its kind against the profile's quota (api/media.js
+// `need = len ?? cap`): a 5 MB video would need 40 MB free. So the page also sends the file's
+// size, and the gateway restores it as the Content-Length of the rewritten PUT, holding the body
+// to exactly that many bytes (proxyRequest bodyLength). Never used when the request has a length
+// of its own.
+export const LENGTH_HEADER = 'x-opengym-length';
+
+/** The Content-Length to restore for a rewritten upload, or undefined. */
+export function tunnelledLength(method, headers) {
+  if (method !== 'PUT' || headers['content-length'] !== undefined) return undefined;
+  const v = headers[LENGTH_HEADER];
+  return typeof v === 'string' && /^[0-9]{1,10}$/.test(v) ? Number(v) : undefined;
+}
+
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**

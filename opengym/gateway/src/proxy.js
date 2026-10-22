@@ -17,13 +17,19 @@ export function withoutHopByHop(headers) {
 }
 
 export const NOT_RESPONDING = { error: 'openGym is not responding' };
+export const LENGTH_MISMATCH = { error: 'the upload was not the size it said it was' };
 
 /**
  * Forward `req` to `target` (a URL) with `headers` (and `method`, the request's own by default),
  * and stream the answer back.
  * `rewriteResponseHeaders(headers)` may adjust the upstream response headers in place.
+ * `bodyLength`, for a body that arrives chunked: send it upstream with that Content-Length
+ * instead. The body must then be exactly that long: a longer one is cut off before the extra
+ * byte, and the last chunk is held back until the body has ended, so upstream never sees a
+ * complete request of the wrong size; either way the client gets a 400 and the upstream
+ * request is aborted.
  */
-export function proxyRequest(req, res, { target, method = req.method, headers, rewriteResponseHeaders = null, log = console }) {
+export function proxyRequest(req, res, { target, method = req.method, headers, bodyLength, rewriteResponseHeaders = null, log = console }) {
   // The client can be gone already (it hung up while the gateway was minting its session); its
   // close events have fired, so an upstream request started now would never be cancelled.
   if (req.socket?.destroyed) return;
@@ -33,7 +39,12 @@ export function proxyRequest(req, res, { target, method = req.method, headers, r
   // the pooled connection (smuggled past forwardHeaders). Naming the coding makes node frame it
   // for every method. node's parser has already refused a request whose last coding is not
   // chunked, and one with a Content-Length as well.
-  if (req.headers['transfer-encoding'] !== undefined) headers = { ...headers, 'transfer-encoding': 'chunked' };
+  if (bodyLength !== undefined) {
+    headers = { ...headers, 'content-length': String(bodyLength) };
+    delete headers['transfer-encoding'];
+  } else if (req.headers['transfer-encoding'] !== undefined) {
+    headers = { ...headers, 'transfer-encoding': 'chunked' };
+  }
   const upstream = http.request({
     protocol: target.protocol,
     hostname: target.hostname,
@@ -77,5 +88,25 @@ export function proxyRequest(req, res, { target, method = req.method, headers, r
   });
   req.on('error', () => { clientGone = true; upstream.destroy(); });
 
-  req.pipe(upstream);
+  if (bodyLength === undefined) { req.pipe(upstream); return; }
+  let seen = 0;
+  let held = null;
+  const mismatch = () => {
+    clientGone = true; // the 502 path must not answer as well
+    upstream.destroy();
+    req.removeAllListeners('data');
+    if (!res.headersSent) sendJson(res, 400, LENGTH_MISMATCH);
+    req.resume();
+  };
+  req.on('data', chunk => {
+    if (held !== null || seen + chunk.length > bodyLength) { mismatch(); return; }
+    seen += chunk.length;
+    if (seen === bodyLength) { held = chunk; return; }
+    if (!upstream.write(chunk)) { req.pause(); upstream.once('drain', () => req.resume()); }
+  });
+  req.on('end', () => {
+    if (clientGone) return;
+    if (seen !== bodyLength) { mismatch(); return; }
+    upstream.end(held ?? undefined);
+  });
 }

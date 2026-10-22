@@ -3,6 +3,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { DIRECT_OFF, INGRESS_PEER, socketPeer } from '../src/gateway.js';
 import { haSessionStore, json, request, startFakeApi, startFakeInternal, startFakeNginx, startGateway, TOKEN } from './helpers/servers.js';
 
@@ -220,6 +221,75 @@ test('ingress media upload sent as POST + X-OpenGym-Method: PUT reaches upstream
   assert.equal(web.seen[0].headers['x-opengym-method'], undefined, 'the tunnel header never reaches upstream');
   assert.equal(web.seen[0].headers['content-type'], 'video/mp4');
   assert.ok(body.equals(web.seen[0].body), 'every byte arrives');
+});
+
+// A raw HTTP/1.1 client: the body is written exactly as given, chunked, whatever it claims.
+// Each chunk is its own 'data' event at the gateway (a pause between writes), and anything the
+// gateway wrongly forwards has time to reach upstream before the request ends.
+function rawChunked(url, { method = 'POST', path: p, headers = [], chunks }) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const sock = net.connect(Number(u.port), u.hostname, async () => {
+      const head = [`${method} ${p} HTTP/1.1`, `Host: ${u.host}`, 'Transfer-Encoding: chunked', 'Connection: close', ...headers.map(([k, v]) => `${k}: ${v}`)].join('\r\n');
+      sock.write(`${head}\r\n\r\n`);
+      for (const c of chunks) {
+        sock.write(`${c.length.toString(16)}\r\n${c}\r\n`);
+        await new Promise(r => setTimeout(r, 40));
+      }
+      if (!sock.destroyed) sock.write('0\r\n\r\n');
+    });
+    let raw = '';
+    sock.on('data', d => { raw += d.toString('latin1'); });
+    sock.on('end', () => resolve({ status: Number(raw.split(' ')[1]), raw }));
+    sock.on('error', reject);
+  });
+}
+
+test('a tunnelled upload goes upstream with its real Content-Length, not chunked', async () => {
+  const { web, gw } = await setup();
+  const r = await rawChunked(gw.url, { path: MEDIA, headers: [['X-OpenGym-Method', 'PUT'], ['X-OpenGym-Length', '11']], chunks: ['hello ', 'world'] });
+  assert.equal(r.status, 200);
+  const seen = web.seen[0];
+  assert.equal(seen.method, 'PUT');
+  assert.equal(seen.headers['content-length'], '11');
+  assert.equal(seen.headers['transfer-encoding'], undefined);
+  assert.equal(seen.headers['x-opengym-length'], undefined, 'the length header never reaches upstream');
+  assert.equal(seen.body.toString(), 'hello world');
+});
+
+test('a tunnelled upload that is not the size it claims is refused, and upstream never gets a whole request', async () => {
+  for (const [claim, chunks] of [['5', ['hello', ' world']], ['5', ['hello world']], ['20', ['hello ', 'world']]]) {
+    const web = [];
+    const { gw } = await setup({ nginx: { readBody: false, respond: (req, res, record) => {
+      const got = [];
+      req.on('data', c => got.push(c));
+      req.on('end', () => { web.push({ complete: true, body: Buffer.concat(got).toString() }); res.end('ok'); });
+      req.on('aborted', () => web.push({ complete: false, body: Buffer.concat(got).toString() }));
+      req.on('error', () => {});
+    } } });
+    const r = await rawChunked(gw.url, { path: MEDIA, headers: [['X-OpenGym-Method', 'PUT'], ['X-OpenGym-Length', claim]], chunks });
+    assert.equal(r.status, 400, `claims ${claim}, sends ${chunks.join('').length}`);
+    assert.match(r.raw, /the upload was not the size it said it was/);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(web.every(w => !w.complete), `claims ${claim}: upstream must not see a complete body (${JSON.stringify(web)})`);
+  }
+});
+
+test('the length header is ignored when the request has a Content-Length of its own, or is not a tunnelled upload', async () => {
+  const { web, gw } = await setup();
+  await request(gw.url, { method: 'POST', path: MEDIA, headers: [['X-OpenGym-Method', 'PUT'], ['X-OpenGym-Length', '999'], ['Content-Length', '3']], body: 'abc' });
+  assert.equal(web.seen[0].headers['content-length'], '3');
+  assert.equal(web.seen[0].body.toString(), 'abc');
+  await rawChunked(gw.url, { path: '/api/media/missing', headers: [['X-OpenGym-Length', '3']], chunks: ['abc'] });
+  assert.equal(web.seen[1].method, 'POST');
+  assert.equal(web.seen[1].headers['content-length'], undefined, 'not a tunnelled upload: stays chunked');
+  assert.equal(web.seen[1].headers['x-opengym-length'], undefined);
+  for (const bad of ['-1', '1e3', '12345678901', '0x3']) {
+    await rawChunked(gw.url, { path: MEDIA, headers: [['X-OpenGym-Method', 'PUT'], ['X-OpenGym-Length', bad]], chunks: ['abc'] });
+    const seen = web.seen.at(-1);
+    assert.equal(seen.headers['content-length'], undefined, `bad length ${JSON.stringify(bad)}: sent on chunked`);
+    assert.equal(seen.body.toString(), 'abc');
+  }
 });
 
 test('the upload rewrite is that one route and header value, from the ingress peer only', async () => {

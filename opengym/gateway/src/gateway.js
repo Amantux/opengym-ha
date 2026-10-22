@@ -8,7 +8,7 @@ import http from 'node:http';
 import { callApi, ApiUnavailable } from './api.js';
 import { logBodyWeight } from './bodyweight.js';
 import { InternalUnavailable } from './internal.js';
-import { addSessionCookie, ingressMethod, METHOD_HEADER, rewriteIngressResponse, shouldDropOrigin, stripSessionCookies, utf8FromHeader } from './ingress.js';
+import { addSessionCookie, ingressMethod, LENGTH_HEADER, METHOD_HEADER, rewriteIngressResponse, tunnelledLength, shouldDropOrigin, stripSessionCookies, utf8FromHeader } from './ingress.js';
 import { BadRequest, readJsonBody, sendJson } from './json.js';
 import { NOT_RESPONDING, proxyRequest, withoutHopByHop } from './proxy.js';
 import { buildSummary, createStateReader } from './summary.js';
@@ -42,6 +42,7 @@ export function forwardHeaders(req, peer) {
   const headers = withoutHopByHop(req.headers);
   for (const name of Object.keys(headers)) if (name.startsWith('x-remote-user-')) delete headers[name];
   delete headers[METHOD_HEADER];
+  delete headers[LENGTH_HEADER];
   headers['x-forwarded-for'] = peer;
   headers['x-real-ip'] = peer;
   delete headers['cf-connecting-ip'];
@@ -135,9 +136,11 @@ export function createGateway({ config, internal, effectiveRoutineId, peerOf = s
 
     // 4. Response rewrites for HA's frame.
     const ingressPath = req.headers['x-ingress-path'];
-    // 5. A media upload the page sent as POST goes on as its PUT (see ingressMethod).
+    // 5. A media upload the page sent as POST goes on as its PUT, with its real length (see
+    //    ingressMethod, tunnelledLength).
     const method = ingressMethod(req.method, pathname, req.headers);
-    proxyRequest(req, res, { target: web, method, headers, rewriteResponseHeaders: h => rewriteIngressResponse(h, ingressPath), log });
+    const bodyLength = method === req.method ? undefined : tunnelledLength(method, req.headers);
+    proxyRequest(req, res, { target: web, method, headers, bodyLength, rewriteResponseHeaders: h => rewriteIngressResponse(h, ingressPath), log });
   }
 
   return async function handle(req, res) {
