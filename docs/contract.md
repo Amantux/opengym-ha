@@ -66,7 +66,7 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 | `/usr/share/nginx/html/ha-ingress.js` | the gateway's page-side upload script (`gateway/web/`), loaded first by `index.html` (§6 step 6) |
 | `/opt/opengym/integration/opengym/` | root-owned copy of `custom_components/opengym` minus `tests/` and byte-code; kept identical by `tools/sync_integration.py`, enforced by `tools/addon_lint.py` |
 | `/homeassistant/` | HA's configuration folder: `config.yaml` `map: [{type: homeassistant_config, read_only: false, path: /homeassistant}]`. Mounted whenever the add-on is installed; reachable only from the `opengym` parent profile (the installer), never from `//app` |
-| `/homeassistant/custom_components/opengym/.installed-by-opengym-addon` | the installer's marker: the version it installed |
+| `/homeassistant/custom_components/opengym/.installed-by-opengym-addon` | the installer's marker: the version it installed, then the sha256 of the `manifest.json` it installed |
 | `/run/opengym-discovery/` | root:root 0700, discovery's state dir: the entrypoint copies the integration token into it (reading it as `app`) once the gateway answers `/healthz`; root never opens a path under `/data` |
 | `/etc/opengym/nginx/default.conf.template` | upstream `web/nginx.conf.template` verbatim (copied from the web image) |
 
@@ -111,7 +111,9 @@ Precedence: non-empty option in `options.json` → declared default. `""` means 
 **Installer** (`/usr/local/bin/opengym-install-integration.sh`, run by the entrypoint only when
 `RESOLVED_INSTALL_INTEGRATION=true`): root, busybox only, after the options are read and before
 any server starts. Copies the bundled integration to `/homeassistant/custom_components/opengym`
-only when that is absent or carries the marker with another version; never touches a copy
+only when that is absent or carries the marker with another version; the marker's second line
+is the sha256 of the `manifest.json` it installed, and a copy whose `manifest.json` no longer
+matches it (or is not a plain file) counts as changed and is left alone; never touches a copy
 without the marker (HACS, by hand); refuses a symlinked `custom_components`, `opengym` or marker;
 swaps by two renames through `.opengym-addon-new` / `.opengym-addon-old`; one log line per
 outcome; always exits 0. Off: nothing touches `/homeassistant`, and turning it off removes

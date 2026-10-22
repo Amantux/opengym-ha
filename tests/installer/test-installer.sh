@@ -28,7 +28,7 @@ expect() {
 }
 says() { printf '%s\n' "$out" | grep -q -- "$1"; }
 never_says() { ! says "$1"; }
-installed() { cat "$CC/opengym/$MARK" 2>/dev/null; }
+installed() { head -n 1 "$CC/opengym/$MARK" 2>/dev/null; }
 is_installed() { [ "$(installed)" = "$1" ]; }
 # Entries of custom_components other than opengym (temp dirs left behind would show here).
 others() {
@@ -50,7 +50,8 @@ mk_src() {
 }
 # The installer's output in $out; any exit status but 0 is a failure of its own.
 run() {
-  out=$(OPENGYM_INTEGRATION_SRC=src/opengym OPENGYM_HA_CONFIG=ha sh "$INSTALLER" 2>&1)
+  # timeout: a regression that blocks on a planted FIFO fails instead of hanging the run.
+  out=$(OPENGYM_INTEGRATION_SRC=src/opengym OPENGYM_HA_CONFIG=ha timeout 20 sh "$INSTALLER" 2>&1)
   rc=$?
   if [ "$rc" -ne 0 ]; then printf 'not ok - exit status %s, must always be 0 (output: %s)\n' "$rc" "$out"; fail=1; fi
 }
@@ -93,8 +94,33 @@ ln -s ../../secrets.yaml "$CC/opengym/$MARK"; run
 expect "symlinked marker not followed, its target never logged" \
   all 'says "symbolic link"' 'never_says hunter2' '[ ! -e "$CC/opengym/__init__.py" ]'
 reset; mk_src 0.2.0; mkdir -p "$CC/opengym"; echo "db_password: hunter2" > "$CC/opengym/$MARK"; run
-expect "a marker that is not a version is replaced and never logged" \
-  all 'is_installed 0.2.0' 'says "from unknown to 0.2.0"' 'never_says hunter2'
+expect "a marker without the add-on's fingerprint: untouched, its content never logged" \
+  all 'says "changed since the add-on installed it"' 'never_says hunter2' '[ ! -e "$CC/opengym/__init__.py" ]'
+
+# HACS (or a person) changed the add-on's copy without removing the marker.
+reset; mk_src 0.1.0; run
+sed -i 's/"version": "0.1.0"/"version": "0.1.5"/' "$CC/opengym/manifest.json"
+mk_src 0.2.0; run
+expect "a copy whose manifest changed since it was installed: untouched" \
+  all 'says "changed since the add-on installed it"' 'grep -q 0.1.5 "$CC/opengym/manifest.json"'
+reset; mk_src 0.1.0; run
+# shellcheck disable=SC2034 # read by all() through eval
+pinned=$(sed -n 2p "$CC/opengym/$MARK")
+# shellcheck disable=SC2034 # read by all() through eval
+actual=$(sha256sum "$CC/opengym/manifest.json" | cut -d' ' -f1)
+expect "the marker's second line is the installed manifest.json's sha256" all '[ -n "$pinned" ]' '[ "$pinned" = "$actual" ]'
+# A FIFO in its place must not even be opened: that blocks until a writer comes. A writer
+# arrives after 8 s, so a regression shows up as a slow run, not as a hung one.
+rm "$CC/opengym/manifest.json"; mkfifo "$CC/opengym/manifest.json"; mk_src 0.2.0
+(sleep 8; : > "$CC/opengym/manifest.json") & writer=$!
+started=$(date +%s); run; took=$(( $(date +%s) - started ))
+kill "$writer" 2>/dev/null; wait "$writer" 2>/dev/null
+expect "manifest.json replaced by a FIFO: untouched, never opened (took ${took}s)" \
+  all 'says "changed since the add-on installed it"' '[ -p "$CC/opengym/manifest.json" ]' '[ "$took" -lt 5 ]'
+reset; mk_src 0.1.0; run
+mv "$CC/opengym/manifest.json" ha/real-manifest.json; ln -s ../../real-manifest.json "$CC/opengym/manifest.json"; mk_src 0.2.0; run
+expect "a symlinked manifest.json: untouched" \
+  all 'says "changed since the add-on installed it"' '[ -L "$CC/opengym/manifest.json" ]'
 
 rm -rf ha; run
 expect "no config folder: skip" says "not mounted"

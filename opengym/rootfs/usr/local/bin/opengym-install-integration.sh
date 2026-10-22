@@ -8,8 +8,11 @@
 # Never fails the add-on's start: every outcome is one log line and exit 0.
 #
 # A copy it did not put there (HACS, by hand) is never touched. A copy it did put there carries
-# MARK with its version and is replaced only when this image bundles a different one. Nothing is
-# ever removed, also not when the option is turned off again: the integration may be in use.
+# MARK: its version, then the sha256 of the manifest.json it installed. It is replaced only when
+# this image bundles a different version AND its manifest.json is still the one it installed, so
+# a copy that changed since (HACS installing over it without removing the marker, a hand edit)
+# is left alone too. Nothing is ever removed, also not when the option is turned off again: the
+# integration may be in use.
 # OPENGYM_INTEGRATION_SRC and OPENGYM_HA_CONFIG exist for tests/installer/test-installer.sh.
 set -u
 
@@ -28,6 +31,8 @@ say() { printf 'openGym: integration installer: %s\n' "$*"; }
 
 want=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([0-9A-Za-z.+-]*\)".*/\1/p' "$SRC/manifest.json" 2>/dev/null | head -n 1)
 if [ -z "$want" ]; then say "the bundled integration has no readable version; nothing installed."; exit 0; fi
+want_sum=$(sha256sum "$SRC/manifest.json" 2>/dev/null | cut -d' ' -f1)
+if [ -z "$want_sum" ]; then say "the bundled integration's manifest cannot be read; nothing installed."; exit 0; fi
 if [ ! -d "$HA" ]; then say "Home Assistant's configuration folder is not mounted; nothing installed."; exit 0; fi
 # Never follow a link out of the configuration folder.
 for p in "$DIR" "$DEST" "$DEST/$MARK"; do
@@ -42,10 +47,21 @@ if [ -f "$DEST/$MARK" ]; then
   have=$(head -n 1 "$DEST/$MARK" 2>/dev/null)
   # Only a version ever goes into the log.
   if ! printf '%s\n' "$have" | grep -q "$VERSION_SHAPE"; then have=unknown; fi
+  # Still the manifest.json this script installed? Only a plain file is read: a FIFO or a link
+  # planted in its place counts as changed (and could not hang the add-on's start).
+  pinned=$(sed -n 2p "$DEST/$MARK" 2>/dev/null)
+  now=""
+  if [ -f "$DEST/manifest.json" ] && [ ! -L "$DEST/manifest.json" ]; then
+    now=$(sha256sum "$DEST/manifest.json" 2>/dev/null | cut -d' ' -f1)
+  fi
+  if [ -z "$now" ] || [ "$pinned" != "$now" ]; then
+    say "custom_components/opengym changed since the add-on installed it (HACS or by hand); not touched."
+    exit 0
+  fi
 fi
 if [ "$have" = "$want" ]; then say "version $want is already installed."; exit 0; fi
 
-if ! { mkdir -p "$DIR" && rm -rf "$TMP" "$OLD" && cp -R "$SRC" "$TMP" && printf '%s\n' "$want" > "$TMP/$MARK"; }; then
+if ! { mkdir -p "$DIR" && rm -rf "$TMP" "$OLD" && cp -R "$SRC" "$TMP" && printf '%s\n%s\n' "$want" "$want_sum" > "$TMP/$MARK"; }; then
   rm -rf "$TMP"
   say "could not write to custom_components; nothing installed."
   exit 0

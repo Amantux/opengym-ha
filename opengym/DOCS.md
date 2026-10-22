@@ -112,8 +112,8 @@ add-on. Pick one way:
 - **With the add-on.** Turn on `install_integration` on the add-on's **Configuration** tab and
   restart the add-on. When its log says `installed the openGym integration`, restart Home
   Assistant. The add-on updates its copy whenever the add-on itself is updated. It never
-  overwrites a copy installed by HACS or by hand, and turning the option off later removes
-  nothing.
+  overwrites a copy installed by HACS or by hand, or one that changed after the add-on put it
+  there, and turning the option off later removes nothing.
 
 The add-on has Home Assistant's configuration folder mounted read-write whenever it is
 installed, with `install_integration` on or off: the folder cannot be mounted only while the
