@@ -104,7 +104,20 @@ unencrypted, and passkeys do not work over http.
 
 The add-on announces itself to Home Assistant. After it starts, go to **Settings → Devices &
 services**: openGym shows up as discovered. Select **Add** to set it up; there is nothing to
-type.
+type. The dialog names the add-on that announced itself: accept it only for the openGym add-on
+you installed. From then on the integration listens to that add-on only; an announcement from
+any other add-on changes nothing.
+
+- **There is no token to copy.** The add-on is set up by discovery, and on Home Assistant OS you
+  cannot read its token file anyway. If the integration ever says openGym rejected its token (for
+  example after you reinstalled the add-on), restart the add-on: it announces its current token
+  again and the integration reloads itself. If it is still not connected after that, restart
+  Home Assistant.
+- **Reinstalled openGym from a different add-on repository?** Home Assistant sees that as a
+  different add-on. Delete the openGym integration (**Settings → Devices & services → openGym**),
+  then add the new one when it shows up as discovered. Restart Home Assistant if it does not.
+- **Adding openGym by hand** (host, port and token) is only for an openGym gateway that runs
+  outside Home Assistant.
 
 Each openGym profile becomes a device with these sensors, refreshed every minute:
 
@@ -119,6 +132,9 @@ Each openGym profile becomes a device with these sensors, refreshed every minute
 A new household member's device appears on its own once they have opened openGym.
 
 ### Actions
+
+Every Home Assistant user can run these actions, for any profile: Home Assistant has no
+per-user permissions for actions.
 
 **`opengym.log_body_weight`** records a weigh-in, for example from a smart scale.
 
@@ -141,6 +157,12 @@ today's routine (or just one, with `profile`). Use it in a script with `response
 **`opengym_workout_completed`** fires when a profile logs a new workout, within about a minute.
 Its data: `profile_id`, `profile_name`, `date`, `routine_name`, `duration_min`.
 
+It fires once per workout, and not for workouts that already existed when the integration
+started, or for an older workout that is the latest again because a newer one was deleted. When
+Home Assistant has seen no earlier workout for a profile, the workout must have ended in the last
+24 hours (without an end time: be dated today or yesterday), so history imported from another
+app is not announced.
+
 ### Example: log weight from a smart scale
 
 ```yaml
@@ -149,16 +171,24 @@ automation:
     triggers:
       - trigger: state
         entity_id: sensor.bathroom_scale_weight
+        # Only a new reading: not the scale coming back from "unavailable" or
+        # "unknown" (a restart, a reload, a failed cloud poll) with its old
+        # value, and not a change to its attributes alone.
+        not_from:
+          - unavailable
+          - unknown
     conditions:
-      # Skip "unavailable" and "unknown" while the scale wakes up or sleeps.
+      # A number, in a unit openGym takes.
       - condition: template
-        value_template: "{{ trigger.to_state.state | is_number }}"
+        value_template: >-
+          {{ trigger.to_state.state | is_number
+             and trigger.to_state.attributes.unit_of_measurement in ['kg', 'lb'] }}
     actions:
       - action: opengym.log_body_weight
         data:
           profile: Alex
           weight: "{{ trigger.to_state.state | float }}"
-          unit: kg
+          unit: "{{ trigger.to_state.attributes.unit_of_measurement }}"
 ```
 
 ### Example: a notification when a workout finishes
@@ -218,6 +248,10 @@ openGym: **Settings → Data & backup**.
   Use **Disable account** (see [Signing out](#signing-out)).
 - **Passkeys cannot be created inside the Home Assistant panel**, and a profile made on the
   direct address cannot be joined to a Home Assistant profile.
+- **Videos are limited to 15 MB** (openGym's own default is 40 MB). Uploads from the sidebar go
+  through the Home Assistant Supervisor, which holds each request in memory and refuses anything
+  over 16 MiB, so openGym refuses a bigger video up front with its own message. The same limit
+  applies on direct access. Photos and GIFs are well under it.
 - Inside the sidebar, openGym shares Home Assistant's address, so a security bug in openGym could
   reach Home Assistant. That is true of every add-on with a sidebar panel; keep the add-on
   updated.
