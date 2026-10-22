@@ -24,7 +24,8 @@
 #   E2E_OUT              where logs are written            (tests/e2e/out)
 #   E2E_NODE_IMAGE       assertion client image            (node:22-alpine)
 #   E2E_NGINX_IMAGE      fake ingress image                (nginx:alpine)
-#   E2E_SCREENSHOT_DIR   if set: Playwright screenshots through the ingress are saved here
+#   E2E_SCREENSHOT_DIR   if set: Playwright screenshots through the ingress are saved here,
+#                        with browser-log.json (console, failed and 4xx/5xx requests)
 #   E2E_PLAYWRIGHT_IMAGE image with node + the playwright module + Chromium (required with
 #                        E2E_SCREENSHOT_DIR; see screenshot.mjs for how it is located)
 # Only one run at a time per Docker host: the subnet is fixed by what is being tested.

@@ -3,16 +3,77 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Home Assistant (fake ingress panel)</title>
+<!-- No favicon request: its 404 from the fake ingress would be noise in browser-log.json. -->
+<link rel="icon" href="data:,">
+<title>openGym – Home Assistant (fake ingress panel)</title>
+<!--
+  What Home Assistant's frontend draws around an ingress add-on, so screenshots show the app at
+  the size users get. Geometry from HA's own source (frontend 20241106.0, the one HA 2024.11
+  ships, and 20260930.4, both read 2026-10-22):
+  - src/layouts/home-assistant-main.ts: the sidebar is 256 px wide; at max-width 870px HA is
+    "narrow" and the sidebar becomes a hidden drawer.
+  - the add-on panel (hassio-ingress-view.ts, now src/panels/app/ha-panel-app.ts): the iframe
+    fills the panel. A 40 px header (menu button, add-on name; sidebar colours, divider below)
+    sits above it ONLY when narrow; next to a docked sidebar there is no toolbar at all.
+  So at 1280x800 the app gets a 1024x800 frame, and on a 390x844 phone a 390x804 one. The
+  iframe is same-origin, like HA's, at the ingress URL of HA user A (fake-ingress.conf).
+-->
 <style>
-  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #111; }
-  header { height: 48px; display: flex; align-items: center; padding: 0 16px; background: #03a9f4; color: #fff; font-size: 18px; }
-  iframe { display: block; border: 0; width: 100%; height: calc(100% - 48px); }
+  :root {
+    --sidebar-width: 256px;
+    --header-height: 40px;
+    --primary: #03a9f4;
+    --sidebar-bg: #ffffff;
+    --divider: rgba(0, 0, 0, 0.12);
+    --text: #212121;
+    --muted: #727272;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fafafa; color: var(--text);
+    font-family: Roboto, "Segoe UI", system-ui, sans-serif; }
+  aside { position: fixed; top: 0; bottom: 0; left: 0; width: var(--sidebar-width); box-sizing: border-box;
+    background: var(--sidebar-bg); border-right: 1px solid var(--divider); display: flex; flex-direction: column; }
+  aside .title { height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 12px;
+    border-bottom: 1px solid var(--divider); font-size: 20px; }
+  aside nav { padding: 4px 0; flex: 1; }
+  aside a { display: flex; align-items: center; gap: 24px; height: 40px; margin: 4px 8px; padding: 0 12px;
+    border-radius: 4px; color: var(--text); text-decoration: none; font-size: 14px; font-weight: 500; }
+  aside a .dot { width: 24px; height: 24px; border-radius: 50%; background: var(--muted); opacity: 0.35; }
+  aside a.selected { color: var(--primary); background: rgba(3, 169, 244, 0.12); }
+  aside a.selected .dot { background: var(--primary); opacity: 1; }
+  aside .bottom { border-top: 1px solid var(--divider); padding: 4px 0; }
+  header { display: none; }
+  iframe#panel { position: fixed; top: 0; left: var(--sidebar-width); width: calc(100% - var(--sidebar-width));
+    height: 100%; border: 0; display: block; background: #fafafa; }
+  @media (max-width: 870px) {
+    aside { display: none; }
+    header { display: flex; align-items: center; gap: 12px; position: fixed; top: 0; left: 0; right: 0;
+      height: var(--header-height); box-sizing: border-box; padding: 0 16px; font-size: 16px;
+      background: var(--sidebar-bg); border-bottom: 1px solid var(--divider); }
+    iframe#panel { left: 0; top: var(--header-height); width: 100%; height: calc(100% - var(--header-height)); }
+  }
+  svg { width: 24px; height: 24px; fill: currentColor; flex: none; }
+  header svg { width: 20px; height: 20px; }
 </style>
 </head>
 <body>
-<header>openGym &middot; fake Home Assistant sidebar panel</header>
-<!-- What HA's sidebar panel does for an ingress add-on: a same-origin iframe of the ingress URL. -->
+<aside aria-label="Home Assistant sidebar">
+  <div class="title"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>Home Assistant</div>
+  <nav>
+    <a href="#"><span class="dot"></span>Overview</a>
+    <a href="#"><span class="dot"></span>Energy</a>
+    <a href="#"><span class="dot"></span>Map</a>
+    <a href="#"><span class="dot"></span>Logbook</a>
+    <a href="#"><span class="dot"></span>History</a>
+    <a href="#" class="selected" aria-current="page"><span class="dot"></span>openGym</a>
+    <a href="#"><span class="dot"></span>Media</a>
+  </nav>
+  <div class="bottom">
+    <a href="#"><span class="dot"></span>Developer tools</a>
+    <a href="#"><span class="dot"></span>Settings</a>
+    <a href="#"><span class="dot"></span>Alex Example</a>
+  </div>
+</aside>
+<header id="panel-header"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg><span>openGym</span></header>
 <iframe id="panel" title="openGym" src="/api/hassio_ingress/abc/" allow="fullscreen"></iframe>
 </body>
 </html>
