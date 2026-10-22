@@ -107,7 +107,7 @@ async def test_profile_id_is_path_quoted(hass, aioclient_mock):
     await setup_entry(hass, aioclient_mock, summary(odd))
     aioclient_mock.post(f"{BASE}/ha/v1/profiles/x%2F..%2F..%2Fhealth/bodyweight", json=OK_RESPONSE)
 
-    await _log(hass, profile="Alex", weight=80, date="2026-10-22")
+    await _log(hass, profile="Alex", weight=80, unit="kg", date="2026-10-22")
 
     [(_, url, _, _)] = _posted(aioclient_mock)
     assert url.raw_path == "/ha/v1/profiles/x%2F..%2F..%2Fhealth/bodyweight"
@@ -121,7 +121,7 @@ async def test_ambiguous_name_refuses_lists_candidates_and_writes_nothing(hass, 
     aioclient_mock.post(bodyweight_url(twin["id"]), json=OK_RESPONSE)
 
     with pytest.raises(ServiceValidationError) as err:
-        await _log(hass, profile="alex", weight=80)
+        await _log(hass, profile="alex", weight=80, unit="kg")
 
     assert err.value.translation_key == "ambiguous_profile"
     message = str(err.value)
@@ -135,7 +135,7 @@ async def test_unknown_profile_refuses_and_lists_every_profile(hass, aioclient_m
     aioclient_mock.post(bodyweight_url(ALEX["id"]), json=OK_RESPONSE)
 
     with pytest.raises(ServiceValidationError) as err:
-        await _log(hass, profile="Al", weight=80)
+        await _log(hass, profile="Al", weight=80, unit="kg")
 
     assert err.value.translation_key == "unknown_profile"
     message = str(err.value)
@@ -174,29 +174,27 @@ async def test_date_defaults_to_today_in_home_assistant_time_zone(hass, aioclien
     await setup_entry(hass, aioclient_mock)
     aioclient_mock.post(bodyweight_url(ALEX["id"]), json=OK_RESPONSE)
 
-    await _log(hass, profile="Alex", weight=80)
+    await _log(hass, profile="Alex", weight=80, unit="kg")
 
     [(_, _, payload, _)] = _posted(aioclient_mock)
     assert payload["date"] == "2026-10-23"
 
 
-async def test_unit_defaults_to_kg_on_metric(hass, aioclient_mock):
-    await setup_entry(hass, aioclient_mock)
-    aioclient_mock.post(bodyweight_url(ALEX["id"]), json=OK_RESPONSE)
+async def test_omitting_unit_is_a_validation_error(hass, aioclient_mock):
+    """The unit is never guessed.
 
-    await _log(hass, profile="Alex", weight=80, date="2026-10-22")
-
-    assert _posted(aioclient_mock)[0][2]["unit"] == "kg"
-
-
-async def test_unit_defaults_to_lb_on_us_customary(hass, aioclient_mock):
+    Home Assistant does not convert weight sensors to lb on a US customary
+    system, so a kg scale there would otherwise be logged 2.2x too low.
+    """
     hass.config.units = US_CUSTOMARY_SYSTEM
     await setup_entry(hass, aioclient_mock)
     aioclient_mock.post(bodyweight_url(ALEX["id"]), json=OK_RESPONSE)
 
-    await _log(hass, profile="Alex", weight=176, date="2026-10-22")
+    with pytest.raises(vol.Invalid) as err:
+        await _log(hass, profile="Alex", weight=80, date="2026-10-22")
 
-    assert _posted(aioclient_mock)[0][2]["unit"] == "lb"
+    assert "unit" in str(err.value)
+    assert _posted(aioclient_mock) == []
 
 
 async def test_without_return_response_still_writes(hass, aioclient_mock):
@@ -204,7 +202,7 @@ async def test_without_return_response_still_writes(hass, aioclient_mock):
     aioclient_mock.post(bodyweight_url(ALEX["id"]), json=OK_RESPONSE)
 
     await hass.services.async_call(
-        DOMAIN, "log_body_weight", {"profile": "Alex", "weight": 80}, blocking=True
+        DOMAIN, "log_body_weight", {"profile": "Alex", "weight": 80, "unit": "kg"}, blocking=True
     )
 
     assert len(_posted(aioclient_mock)) == 1
@@ -215,7 +213,7 @@ async def test_non_positive_or_non_numeric_weight_is_rejected_locally(hass, aioc
     await setup_entry(hass, aioclient_mock)
 
     with pytest.raises(vol.Invalid):
-        await _log(hass, profile="Alex", weight=weight)
+        await _log(hass, profile="Alex", weight=weight, unit="kg")
 
     assert _posted(aioclient_mock) == []
 
@@ -243,7 +241,7 @@ async def test_gateway_errors_map_to_our_messages_never_the_body(
     aioclient_mock.post(bodyweight_url(ALEX["id"]), **response)
 
     with pytest.raises(error_cls) as err:
-        await _log(hass, profile="Alex", weight=80, date="2026-10-22")
+        await _log(hass, profile="Alex", weight=80, unit="kg", date="2026-10-22")
 
     assert err.value.translation_key == key
     message = str(err.value)
@@ -277,10 +275,10 @@ async def test_several_entries_need_config_entry_id(hass, aioclient_mock):
     )
 
     with pytest.raises(ServiceValidationError) as err:
-        await _log(hass, profile="Sam", weight=80)
+        await _log(hass, profile="Sam", weight=80, unit="kg")
     assert err.value.translation_key == "entry_required"
 
-    await _log(hass, profile="Sam", weight=80, config_entry_id=other.entry_id)
+    await _log(hass, profile="Sam", weight=80, unit="kg", config_entry_id=other.entry_id)
     [(_, url, _, headers)] = _posted(aioclient_mock)
     assert url.host == "gym2.local"
     assert headers["Authorization"] == "Bearer t2"
@@ -290,7 +288,7 @@ async def test_unknown_config_entry_id(hass, aioclient_mock):
     await setup_entry(hass, aioclient_mock)
 
     with pytest.raises(ServiceValidationError) as err:
-        await _log(hass, profile="Alex", weight=80, config_entry_id="nope")
+        await _log(hass, profile="Alex", weight=80, unit="kg", config_entry_id="nope")
 
     assert err.value.translation_key == "entry_not_found"
 
@@ -300,7 +298,7 @@ async def test_no_loaded_entry(hass, aioclient_mock):
     assert await hass.config_entries.async_unload(entry.entry_id)
 
     with pytest.raises(ServiceValidationError) as err:
-        await _log(hass, profile="Alex", weight=80)
+        await _log(hass, profile="Alex", weight=80, unit="kg")
 
     assert err.value.translation_key == "entry_not_loaded"
 

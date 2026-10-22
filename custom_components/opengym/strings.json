@@ -109,7 +109,7 @@
         },
         "unit": {
           "name": "Unit",
-          "description": "Unit of the weight. Defaults to lb with a US customary unit system, otherwise kg."
+          "description": "Unit of the weight, kg or lb. For a scale sensor, use the unit the sensor reports."
         },
         "date": {
           "name": "Date",

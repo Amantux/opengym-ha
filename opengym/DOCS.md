@@ -126,7 +126,7 @@ A new household member's device appears on its own once they have opened openGym
 | --- | --- |
 | `profile` | The profile's id, or its exact name (not case-sensitive). |
 | `weight` | The measured weight. openGym converts it to the profile's own unit. |
-| `unit` | `kg` or `lb`. Defaults to `lb` when Home Assistant uses US customary units, otherwise `kg`. |
+| `unit` | `kg` or `lb`, required. For a scale sensor, use the unit the sensor shows: Home Assistant does not convert weight sensors to your unit system. |
 | `date` | Day of the weigh-in. Defaults to today in Home Assistant's time zone. |
 
 A profile keeps one weigh-in per day, so a second one on the same day replaces the first. The

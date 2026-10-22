@@ -11,7 +11,6 @@ from typing import Any, NoReturn
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import UnitOfMass
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
@@ -49,7 +48,9 @@ LOG_BODY_WEIGHT_SCHEMA = vol.Schema(
         # Only "a positive number" here; the gateway owns the real limits
         # (≤ 700 kg-equivalent) and answers 400, mapped below.
         vol.Required(ATTR_WEIGHT): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
-        vol.Optional(ATTR_UNIT): vol.In([UNIT_KG, UNIT_LB]),
+        # Required: Home Assistant's unit system says nothing about the unit
+        # a scale sensor reports (it never converts weight sensors to lb).
+        vol.Required(ATTR_UNIT): vol.In([UNIT_KG, UNIT_LB]),
         vol.Optional(ATTR_DATE): cv.date,
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
     }
@@ -142,10 +143,6 @@ def _raise_for_write_error(err: OpenGymError, name: str) -> NoReturn:
     _error("not_responding")
 
 
-def _default_unit(hass: HomeAssistant) -> str:
-    return UNIT_LB if hass.config.units.mass_unit == UnitOfMass.POUNDS else UNIT_KG
-
-
 async def _async_log_body_weight(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
     coordinator = _coordinator(hass, call)
     profile = resolve_profile(coordinator.data, call.data[ATTR_PROFILE])
@@ -155,7 +152,7 @@ async def _async_log_body_weight(hass: HomeAssistant, call: ServiceCall) -> Serv
     day = call.data.get(ATTR_DATE) or dt_util.now().date()
     payload = {
         "weight": call.data[ATTR_WEIGHT],
-        "unit": call.data.get(ATTR_UNIT) or _default_unit(hass),
+        "unit": call.data[ATTR_UNIT],
         "date": day.isoformat(),
     }
     try:

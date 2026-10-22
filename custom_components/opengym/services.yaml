@@ -16,6 +16,8 @@ log_body_weight:
           step: any
           mode: box
     unit:
+      required: true
+      example: kg
       selector:
         select:
           options:
