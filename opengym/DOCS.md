@@ -49,6 +49,7 @@ All options are optional. With the defaults, openGym works from the sidebar and 
 | `invite_only` | off | New profiles made on direct access need an invite code from the admin. Home Assistant users always get their profile. |
 | `allow_guest` | off | Show **Continue without account**. A guest's data stays in that one browser: no sync, no backup. |
 | `default_lang` | blank | Language the sign-in screen and new profiles start in, such as `de` or `pt-BR`. Blank = each browser's own language. |
+| `install_integration` | off | Install the openGym integration that comes with the add-on into Home Assistant. See [Installing the integration](#installing-the-integration). |
 
 If an option is invalid (for example an `external_url` with a path in it), the add-on refuses
 to start and its log lists every problem at once. Fix them and start it again.
@@ -99,6 +100,27 @@ Things to know:
 Nothing on the phone is lost in the meantime. The Android app can also pair with a plain
 `http://` address on your home network, but the code and the app's token then cross your network
 unencrypted, and passkeys do not work over http.
+
+## Installing the integration
+
+The openGym integration (the sensors, actions and event below) is installed separately from the
+add-on. Pick one way:
+
+- **With HACS (the usual way).** In HACS, open the menu, choose **Custom repositories**, add
+  `https://github.com/Amantux/opengym-ha` with the type **Integration**, download **openGym**,
+  then restart Home Assistant. HACS keeps it updated from then on.
+- **With the add-on.** Turn on `install_integration` on the add-on's **Configuration** tab and
+  restart the add-on. When its log says `installed the openGym integration`, restart Home
+  Assistant. The add-on updates its copy whenever the add-on itself is updated. It never
+  overwrites a copy installed by HACS or by hand, and turning the option off later removes
+  nothing.
+
+The add-on has Home Assistant's configuration folder mounted read-write whenever it is
+installed, with `install_integration` on or off: the folder cannot be mounted only while the
+option is on. AppArmor confines openGym's web processes (openGym itself, the add-on's gateway and
+its web server) away from that folder, so only the add-on's start-up step can touch it, and only
+to copy the integration in. This protection depends on AppArmor, which Home Assistant OS and
+supported installations enforce.
 
 ## The Home Assistant integration
 
