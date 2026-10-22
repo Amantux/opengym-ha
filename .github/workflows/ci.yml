@@ -145,9 +145,21 @@ jobs:
           .venv/bin/python -m pip install -r tools/requirements-lint.txt
       - name: Ruff
         run: .venv/bin/ruff check .
-      - name: Shellcheck (entrypoint)
-        # PID 1 of the add-on: signal forwarding and privilege drop live here.
-        run: shellcheck opengym/rootfs/usr/local/bin/opengym-entrypoint.sh
+      - name: Shellcheck (entrypoint, integration installer, their tests)
+        # PID 1 of the add-on: signal forwarding and privilege drop live here. The
+        # installer writes into Home Assistant's configuration folder as root.
+        run: |
+          shellcheck opengym/rootfs/usr/local/bin/opengym-entrypoint.sh \
+            opengym/rootfs/usr/local/bin/opengym-install-integration.sh \
+            tests/installer/test-installer.sh tests/e2e/run.sh
+      - name: Integration installer tests (busybox)
+        # install_integration's installer against a scratch configuration folder:
+        # HACS and hand-made copies untouched, no symlink followed, upgrades, never
+        # a failed boot. In node:22-alpine, the add-on's own base, so it runs with
+        # the same busybox the add-on ships.
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" --tmpfs /w:exec --workdir=/w node:22-alpine \
+            sh /repo/tests/installer/test-installer.sh
       - name: Add-on lint's own tests
         run: .venv/bin/python -m unittest discover -s tools/tests -v
       - name: Add-on lint
@@ -269,15 +281,20 @@ jobs:
     timeout-minutes: 30
     # Builds the add-on image from opengym/ exactly as the Supervisor would
     # (FROM the pinned upstream images, patch applied at build) and drives it
-    # through a fake ingress peer. Only worth the build once the gateway and
-    # the patch are known good.
+    # through a fake ingress peer, confined by opengym/apparmor.txt like under
+    # the Supervisor, with the fence around Home Assistant's configuration
+    # folder checked. Only worth the build once the gateway and the patch are
+    # known good.
     needs: [gateway, patch]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build the image and run the end-to-end suite
-        run: bash tests/e2e/run.sh
+      - name: Build the image and run the end-to-end suite under AppArmor
+        # sudo: E2E_APPARMOR=1 loads the profile into the runner's kernel and
+        # reads each process's AppArmor label from the host's /proc. It is root
+        # on this throwaway VM only; the job's token stays contents: read.
+        run: sudo E2E_APPARMOR=1 bash tests/e2e/run.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
