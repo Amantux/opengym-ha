@@ -12,7 +12,10 @@ from __future__ import annotations
 import pytest
 from aiohttp import ClientError
 from homeassistant import config_entries
+from homeassistant.components import persistent_notification
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -59,6 +62,33 @@ async def _start_hassio(hass, token: str, **kwargs):
     return await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_HASSIO}, data=_discovery(token, **kwargs)
     )
+
+
+def _reauth_flows(hass) -> list:
+    return hass.config_entries.flow.async_progress_by_handler(
+        DOMAIN, match_context={"source": config_entries.SOURCE_REAUTH}
+    )
+
+
+def _reauth_notice_left(hass, entry) -> bool:
+    """A repair issue or (HA 2024.11) a notification still asks to re-authenticate."""
+    issue = ir.async_get(hass).async_get_issue(
+        "homeassistant", f"config_entry_reauth_{DOMAIN}_{entry.entry_id}"
+    )
+    notifications = persistent_notification._async_get_or_create_notifications(hass)
+    return issue is not None or "config_entry_reconfigure" in notifications
+
+
+async def _set_up_with_rejected_token(hass, aioclient_mock, entry):
+    """Set `entry` up against a gateway that answers 401: SETUP_ERROR + reauth."""
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(SUMMARY_URL, status=401)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert len(_reauth_flows(hass)) == 1
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(SUMMARY_URL, json=summary(ALEX))
 
 
 async def _user_flow(hass, user_input=USER_INPUT):
@@ -323,6 +353,52 @@ async def test_hassio_rediscovery_updates_token_while_reauth_is_open(hass, aiocl
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
     assert entry.data[CONF_TOKEN] == "new-token"
+    assert _reauth_flows(hass) == []  # nothing left to ask the user for
+
+
+async def test_hassio_rediscovery_recovers_an_entry_whose_setup_was_refused(hass, aioclient_mock):
+    """The token changed while Home Assistant was down: setup got 401 (SETUP_ERROR).
+
+    The add-on's announcement, replayed when Home Assistant starts, must bring
+    the entry back up by itself. HA's own update-on-abort stores the token
+    but only reloads loaded or retrying entries.
+    """
+    entry = make_entry(hass, token="stale-token")
+    await _set_up_with_rejected_token(hass, aioclient_mock, entry)
+
+    result = await _start_hassio(hass, "good-token")
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "already_configured"
+    assert entry.state is ConfigEntryState.LOADED
+    [(_, _, _, headers)] = calls(aioclient_mock, "get", "/ha/v1/summary")
+    assert headers["Authorization"] == "Bearer good-token"
+    assert _reauth_flows(hass) == []
+    assert not _reauth_notice_left(hass, entry)
+
+
+async def test_hassio_rediscovery_closes_the_reauth_a_rejected_poll_opened(hass, aioclient_mock):
+    """Add-on reinstalled while HA runs: a poll gets 401 before the new token arrives.
+
+    Home Assistant 2024.11's reload does not abort the reauth flow itself, so
+    without closing it a working integration keeps asking for a token.
+    """
+    entry = await setup_entry(hass, aioclient_mock, summary(ALEX))
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(SUMMARY_URL, status=401)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert len(_reauth_flows(hass)) == 1
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(SUMMARY_URL, json=summary(ALEX))
+
+    await _start_hassio(hass, "new-token")
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.data[CONF_TOKEN] == "new-token"
+    assert _reauth_flows(hass) == []
+    assert not _reauth_notice_left(hass, entry)
 
 
 async def test_hassio_second_concurrent_discovery_aborts(hass, aioclient_mock):
@@ -356,6 +432,25 @@ async def test_hassio_folds_into_manual_entry_for_same_host(hass, aioclient_mock
     [(_, url, _, headers)] = aioclient_mock.mock_calls
     assert str(url) == SUMMARY_URL
     assert headers["Authorization"] == "Bearer minted"
+
+
+async def test_hassio_fold_recovers_a_manual_entry_whose_setup_was_refused(hass, aioclient_mock):
+    manual = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"{HOST}:{PORT}",
+        data={CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: "stale"},
+    )
+    manual.add_to_hass(hass)
+    await _set_up_with_rejected_token(hass, aioclient_mock, manual)
+
+    result = await _start_hassio(hass, "minted")
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "already_configured"
+    assert manual.data[CONF_TOKEN] == "minted"
+    assert manual.state is ConfigEntryState.LOADED
+    assert _reauth_flows(hass) == []
+    assert not _reauth_notice_left(hass, manual)
 
 
 async def test_hassio_fold_refuses_a_token_the_gateway_rejects(hass, aioclient_mock):

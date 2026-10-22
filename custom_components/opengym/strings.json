@@ -20,7 +20,7 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate openGym",
-        "description": "openGym at {host} rejected the stored integration token. If you run the openGym add-on, restart it: it advertises its token again and Home Assistant picks it up. Otherwise enter the token from `/data/gateway/integration_token` on the openGym host.",
+        "description": "openGym at {host} rejected the stored integration token, for example because the add-on was reinstalled.\n\n**openGym add-on:** you do not need to type anything. Restart the add-on: it announces its current token again and this integration reloads itself with it. If it is still not connected after that, restart Home Assistant.\n\n**openGym running outside Home Assistant:** enter the token from `/data/gateway/integration_token` on the openGym host.",
         "data": {
           "token": "Integration token"
         }
@@ -35,7 +35,7 @@
       "already_configured": "This openGym is already set up.",
       "already_in_progress": "Setup for this openGym is already in progress.",
       "cannot_connect": "Could not reach the openGym add-on. Start it, then try again from Settings → Devices & services.",
-      "invalid_auth": "The openGym add-on rejected its own token. Restart the add-on, then try again.",
+      "invalid_auth": "openGym did not accept the token the add-on announced, so nothing was set up or changed. Restart the openGym add-on: it announces its current token again and Home Assistant picks it up by itself.",
       "not_opengym_addon": "The add-on {addon} (`{slug}`) announced itself as openGym, but openGym is set up from a different add-on. Nothing was changed. If you reinstalled openGym from another repository, delete the openGym integration and add it again.",
       "reauth_successful": "openGym is connected again."
     }

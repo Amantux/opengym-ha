@@ -7,12 +7,18 @@ from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import (
     SOURCE_IGNORE,
+    SOURCE_REAUTH,
+    ConfigEntry,
     ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
 )
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
+from homeassistant.core import callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     NumberSelector,
@@ -48,6 +54,9 @@ USER_SCHEMA = vol.Schema(
     }
 )
 REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_TOKEN): _TOKEN_SELECTOR})
+# Home Assistant 2024.11's global "Integration requires reconfiguration"
+# notification (config_entries.RECONFIGURE_NOTIFICATION_ID; gone in newer cores).
+_REAUTH_NOTIFICATION_ID = "config_entry_reconfigure"
 
 
 def _target(data: Mapping[str, Any]) -> str:
@@ -81,6 +90,41 @@ class OpenGymConfigFlow(ConfigFlow, domain=DOMAIN):
             return "cannot_connect"
         return None
 
+    @callback
+    def _async_update_and_reload(self, entry: ConfigEntry, updates: dict[str, Any]) -> bool:
+        """Store `updates` in `entry`; if anything changed, set it up again with them.
+
+        Home Assistant's own update-on-abort only reloads an entry that is
+        loaded or retrying, so one whose setup failed on the rejected token
+        (SETUP_ERROR) would keep the new token and stay down. And 2024.11's
+        reload leaves the entry's reauth flow open, asking for a token nobody
+        has to type any more, and aborting it there leaves its repair issue
+        and notification behind (newer cores clear both with the flow).
+        Returns whether the data changed.
+        """
+        if not self.hass.config_entries.async_update_entry(entry, data={**entry.data, **updates}):
+            return False
+        reauth = self.hass.config_entries.flow.async_progress_by_handler(
+            DOMAIN, match_context={"entry_id": entry.entry_id, "source": SOURCE_REAUTH}
+        )
+        for flow in reauth:
+            self.hass.config_entries.flow.async_abort(flow["flow_id"])
+            ir.async_delete_issue(
+                self.hass, HOMEASSISTANT_DOMAIN, f"config_entry_reauth_{DOMAIN}_{entry.entry_id}"
+            )
+        if reauth and not any(
+            flow["context"]["source"] == SOURCE_REAUTH
+            for flow in self.hass.config_entries.flow.async_progress()
+        ):
+            persistent_notification.async_dismiss(self.hass, _REAUTH_NOTIFICATION_ID)
+        if entry.state in (
+            ConfigEntryState.LOADED,
+            ConfigEntryState.SETUP_RETRY,
+            ConfigEntryState.SETUP_ERROR,
+        ):
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        return True
+
     # ------------------------------------------------------------------
     # Supervisor discovery — the add-on advertises host, port and token.
     # ------------------------------------------------------------------
@@ -98,7 +142,6 @@ class OpenGymConfigFlow(ConfigFlow, domain=DOMAIN):
         # (Newer cores skip reauth flows in that check themselves.)
         entry = await self.async_set_unique_id(ADDON_UNIQUE_ID, raise_on_progress=False)
 
-        updates: dict[str, Any] | None = None
         if entry is not None and entry.source != SOURCE_IGNORE:
             # Any add-on can list `discovery: [opengym]` and announce itself
             # here. The entry belongs to the add-on whose discovery created it:
@@ -119,10 +162,13 @@ class OpenGymConfigFlow(ConfigFlow, domain=DOMAIN):
             # Re-point host/port only together with a token from the same
             # announcement, so the stored token never goes to a new address;
             # one carrying "" changes nothing (and never wipes a working token).
-            if token:
-                updates = {CONF_HOST: host, CONF_PORT: port, CONF_TOKEN: token}
-        # Reloads the entry when its data changed (if loaded or retrying).
-        self._abort_if_unique_id_configured(updates=updates)
+            if token and self._async_update_and_reload(
+                entry, {CONF_HOST: host, CONF_PORT: port, CONF_TOKEN: token}
+            ):
+                return self.async_abort(reason="already_configured")
+        # Nothing changed (or the entry is ignored): abort. A retrying entry is
+        # retried now, since its add-on just announced that it is up.
+        self._abort_if_unique_id_configured()
 
         # No add-on entry yet: now refuse a second concurrent discovery flow.
         await self.async_set_unique_id(ADDON_UNIQUE_ID)
@@ -142,10 +188,7 @@ class OpenGymConfigFlow(ConfigFlow, domain=DOMAIN):
                 # that address (the user's own, not a new one) accepts it.
                 if error := await self._async_validate(host, port, token):
                     return self.async_abort(reason=error)
-                if self.hass.config_entries.async_update_entry(
-                    entry, data={**entry.data, CONF_TOKEN: token}
-                ) and entry.state in (ConfigEntryState.LOADED, ConfigEntryState.SETUP_RETRY):
-                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                self._async_update_and_reload(entry, {CONF_TOKEN: token})
             return self.async_abort(reason="already_configured")
 
         # Probe before offering, so a stopped add-on cannot create a dead entry.
