@@ -294,7 +294,16 @@ jobs:
         # sudo: E2E_APPARMOR=1 loads the profile into the runner's kernel and
         # reads each process's AppArmor label from the host's /proc. It is root
         # on this throwaway VM only; the job's token stays contents: read.
-        run: sudo E2E_APPARMOR=1 bash tests/e2e/run.sh
+        # If E2E_APPARMOR ever failed to reach the script through sudo, the suite
+        # would quietly run unconfined and still pass, so the step also requires
+        # the fence checks' own heading in the output.
+        run: |
+          set -o pipefail
+          sudo E2E_APPARMOR=1 bash tests/e2e/run.sh | tee e2e-output.txt
+          if ! grep -q '^# the AppArmor fence around /homeassistant$' e2e-output.txt; then
+            echo "::error::the e2e suite did not run under AppArmor (no fence checks)"
+            exit 1
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
