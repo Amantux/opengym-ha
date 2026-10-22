@@ -1,0 +1,15 @@
+{
+  "name": "opengym-ha-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "First hop for the openGym Home Assistant add-on: ingress single sign-on, proxy to nginx, and the /ha/v1 integration API.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test \"test/**/*.test.js\""
+  }
+}
