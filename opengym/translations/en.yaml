@@ -29,3 +29,10 @@ configuration:
       Language code (for example de or pt-BR) that the sign-in screen and new
       profiles start in. Blank = each browser's own language. A person's own
       choice in openGym always wins.
+  install_integration:
+    name: Install the Home Assistant integration
+    description: >-
+      Copy the openGym integration that comes with the add-on into Home
+      Assistant, then restart Home Assistant to load it. Leave it off if you
+      use HACS; a copy installed with HACS or by hand is never changed.
+      Turning it off later removes nothing.

@@ -32,6 +32,14 @@ discovery:
 # Needed for discovery (this add-on's own hostname, POST /discovery) and to read Home
 # Assistant's time zone. The default role is enough; nothing here manages other add-ons.
 hassio_api: true
+# Home Assistant's configuration folder, for install_integration only. The Supervisor mounts it
+# whenever the add-on is installed (a mount cannot follow an option), read-write so the
+# integration can be copied in. AppArmor (apparmor.txt) keeps every openGym, gateway and nginx
+# process away from it: only the add-on's start-up step, as root, can reach it.
+map:
+  - type: homeassistant_config
+    read_only: false
+    path: /homeassistant
 # INTERNAL-ONLY by default (null = not published on the host). The sidebar (ingress) and the
 # Home Assistant integration both work without a host port. Map it only for direct access
 # from outside Home Assistant, and then also set external_url.
@@ -50,6 +58,7 @@ options:
   invite_only: false
   allow_guest: false
   default_lang: ""
+  install_integration: false
 schema:
   # Leave blank unless you reach openGym directly through your own https reverse proxy, e.g.
   # https://gym.example.com (just the address: no path, query or user name). Blank means
@@ -70,3 +79,9 @@ schema:
   # Language the sign-in screen and every new profile start in, e.g. de or pt-BR. Blank = each
   # browser's own language. Anyone's own choice in openGym's settings always wins.
   default_lang: "str?"
+  # Copy the openGym integration that comes with this add-on into Home Assistant's
+  # custom_components, unless it is already installed another way (HACS or by hand: such a
+  # copy is never changed), then restart Home Assistant to load it. Leave it off if you use
+  # HACS. A copy made this way is updated with the add-on; turning this off later removes
+  # nothing.
+  install_integration: bool

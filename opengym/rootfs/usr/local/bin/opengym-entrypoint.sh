@@ -4,9 +4,12 @@
 # them, and exits with the real status of whichever one dies first.
 #
 # Root is used only for what needs root: chowning the Supervisor-managed /data, creating
-# /run/opengym, rendering nginx's config into a root-owned file and keeping SUPERVISOR_TOKEN
-# away from uid 1000. Every server started here runs as `app` (uid 1000) through gosu; the
-# one root child is Supervisor discovery (see there).
+# /run/opengym, rendering nginx's config into a root-owned file, keeping SUPERVISOR_TOKEN away
+# from uid 1000, and (install_integration) copying the bundled integration into Home
+# Assistant's configuration folder. Every server started here runs as `app` (uid 1000) through
+# gosu; the one root child is Supervisor discovery (see there). Under AppArmor every node and
+# nginx process runs in the child profile opengym//app, which cannot reach /homeassistant at
+# all (apparmor.txt); only this script and its busybox helpers can.
 #
 # SUPERVISOR_TOKEN is removed BEFORE gosu (`env -u SUPERVISOR_TOKEN gosu app ...`), never
 # after it: any app process can read the environment of every other one in
@@ -157,7 +160,7 @@ if ! RESOLVED_RAW=$(gateway_cmd node /opt/gateway/src/cli.js resolve); then
 fi
 RESOLVED=$(printf '%s\n' "$RESOLVED_RAW" | grep -E '^RESOLVED_[A-Z_]*=[A-Za-z0-9._:/@-]*$' || true)
 eval "$RESOLVED"
-for name in ORIGIN RP_ID DIRECT_ACCESS PASSWORD_LOGIN INVITE_ONLY ALLOW_GUEST; do
+for name in ORIGIN RP_ID DIRECT_ACCESS PASSWORD_LOGIN INVITE_ONLY ALLOW_GUEST INSTALL_INTEGRATION; do
   eval "value=\${RESOLVED_$name:-}"
   if [ -z "$value" ]; then
     fail "could not resolve RESOLVED_$name from the add-on options; refusing to start."
@@ -170,6 +173,19 @@ else
   log "direct access is off: openGym opens from the Home Assistant sidebar only."
 fi
 checkpoint "after reading the options"
+
+# ---------------------------------------------------------------------------------------
+# install_integration: copy the integration bundled in this image into Home Assistant's
+# custom_components, never over a copy that HACS or a person put there (see the script). It
+# runs here, as root and before any server exists, and it is busybox only: /homeassistant is
+# reachable from this profile alone, not from opengym//app where node and nginx run. It logs
+# one line and never fails boot. Off: nothing touches /homeassistant.
+# ---------------------------------------------------------------------------------------
+if [ "$RESOLVED_INSTALL_INTEGRATION" = true ]; then
+  /usr/local/bin/opengym-install-integration.sh \
+    || log "integration installer: stopped unexpectedly; the add-on starts anyway."
+fi
+checkpoint "after the integration installer"
 
 # ---------------------------------------------------------------------------------------
 # Time zone, best effort; it never blocks or fails boot. openGym stores UTC. TZ is what the

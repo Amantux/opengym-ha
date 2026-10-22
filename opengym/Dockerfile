@@ -77,14 +77,20 @@ RUN node -e '\
   "${BUILD_VERSION}"
 COPY --from=web /etc/nginx/templates/default.conf.template /etc/opengym/nginx/default.conf.template
 
-# Our nginx main config (replaces the package's) and the entrypoint.
+# install_integration: the HACS integration, bundled as integration/ because the build context
+# is this folder (tools/sync_integration.py keeps it identical to custom_components/opengym).
+# The entrypoint's installer copies it into Home Assistant's custom_components. Root-owned;
+# the app user can only read it.
+COPY integration/opengym/ /opt/opengym/integration/opengym/
+
+# Our nginx main config (replaces the package's), the entrypoint and the integration installer.
 COPY rootfs/ /
 
 # nginx runs as `app`: give it the one directory it writes (pid and temp files, see
 # rootfs/etc/nginx/nginx.conf) and the parent it must traverse, nothing recursive. The
 # package's own server block (listen 80) goes; nginx.conf includes only the one the
 # entrypoint renders.
-RUN chmod 0755 /usr/local/bin/opengym-entrypoint.sh \
+RUN chmod 0755 /usr/local/bin/opengym-entrypoint.sh /usr/local/bin/opengym-install-integration.sh \
  && rm -f /etc/nginx/http.d/default.conf \
  && chown app:app /var/lib/nginx /var/lib/nginx/tmp
 
