@@ -9,6 +9,9 @@ DOMAIN = "opengym"
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_TOKEN = "token"
+# Add-on entries only: the Supervisor slug of the add-on whose discovery created
+# the entry. Later discoveries from any other add-on are refused.
+CONF_ADDON_SLUG = "addon_slug"
 
 # The add-on's gateway port: ingress port and the integration's direct port.
 DEFAULT_PORT = 8099

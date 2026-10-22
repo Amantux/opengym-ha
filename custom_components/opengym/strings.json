@@ -16,7 +16,7 @@
       },
       "hassio_confirm": {
         "title": "openGym add-on found",
-        "description": "Set up the **{addon}** add-on? Each openGym profile becomes a device with body weight, last workout and today's routine sensors.\n\nIf you already added openGym by hand using an IP address, remove that entry first so it is not set up twice."
+        "description": "The add-on **{addon}** (`{slug}`) announced an openGym server. Set it up? Each openGym profile becomes a device with body weight, last workout and today's routine sensors. Only continue if this is the openGym add-on you installed.\n\nIf you already added openGym by hand using an IP address, remove that entry first so it is not set up twice."
       },
       "reauth_confirm": {
         "title": "Re-authenticate openGym",
@@ -36,6 +36,7 @@
       "already_in_progress": "Setup for this openGym is already in progress.",
       "cannot_connect": "Could not reach the openGym add-on. Start it, then try again from Settings → Devices & services.",
       "invalid_auth": "The openGym add-on rejected its own token. Restart the add-on, then try again.",
+      "not_opengym_addon": "The add-on {addon} (`{slug}`) announced itself as openGym, but openGym is set up from a different add-on. Nothing was changed. If you reinstalled openGym from another repository, delete the openGym integration and add it again.",
       "reauth_successful": "openGym is connected again."
     }
   },

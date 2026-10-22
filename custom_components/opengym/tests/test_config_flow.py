@@ -18,12 +18,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.opengym.const import (
     ADDON_UNIQUE_ID,
+    CONF_ADDON_SLUG,
     CONF_HOST,
     CONF_PORT,
     CONF_TOKEN,
     DOMAIN,
 )
 from custom_components.opengym.tests.common import (
+    ADDON_SLUG,
     ALEX,
     HOST,
     PORT,
@@ -31,17 +33,24 @@ from custom_components.opengym.tests.common import (
     TOKEN,
     calls,
     make_entry,
+    setup_entry,
     summary,
 )
 
 USER_INPUT = {CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: TOKEN}
 
 
-def _discovery(token: str, host: str = HOST, port: int = PORT) -> HassioServiceInfo:
+def _discovery(
+    token: str,
+    host: str = HOST,
+    port: int = PORT,
+    name: str = "openGym",
+    slug: str = ADDON_SLUG,
+) -> HassioServiceInfo:
     return HassioServiceInfo(
         config={CONF_HOST: host, CONF_PORT: port, CONF_TOKEN: token},
-        name="openGym",
-        slug="opengym",
+        name=name,
+        slug=slug,
         uuid="1234",
     )
 
@@ -165,8 +174,26 @@ async def test_hassio_new_install_probes_then_confirms(hass, aioclient_mock):
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"] == {CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: TOKEN}
+    # Pinned to the add-on that announced it.
+    assert result["data"] == {
+        CONF_HOST: HOST,
+        CONF_PORT: PORT,
+        CONF_TOKEN: TOKEN,
+        CONF_ADDON_SLUG: ADDON_SLUG,
+    }
     assert result["result"].unique_id == ADDON_UNIQUE_ID
+
+
+async def test_hassio_confirm_names_the_announcing_add_on(hass, aioclient_mock):
+    """On a fresh install the user must be able to tell WHICH add-on is asking."""
+    aioclient_mock.get("http://gym-tools:8099/ha/v1/summary", json=summary(ALEX))
+
+    result = await _start_hassio(
+        hass, TOKEN, host="gym-tools", name="Gym Tools", slug="0123abcd_gymtools"
+    )
+
+    assert result["step_id"] == "hassio_confirm"
+    assert result["description_placeholders"] == {"addon": "Gym Tools", "slug": "0123abcd_gymtools"}
 
 
 async def test_hassio_unreachable_aborts(hass, aioclient_mock):
@@ -197,20 +224,71 @@ async def test_hassio_rediscovery_updates_token_and_host(hass, aioclient_mock):
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
-    assert entry.data == {CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: "new-token"}
+    assert entry.data == {
+        CONF_HOST: HOST,
+        CONF_PORT: PORT,
+        CONF_TOKEN: "new-token",
+        CONF_ADDON_SLUG: ADDON_SLUG,
+    }
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
     # Already configured: no probe needed.
     assert aioclient_mock.call_count == 0
 
 
-async def test_hassio_rediscovery_empty_token_keeps_stored_token(hass):
+async def test_hassio_rediscovery_empty_token_keeps_stored_token(hass, aioclient_mock):
     entry = make_entry(hass, token="good-token")
+    before = dict(entry.data)
 
-    result = await _start_hassio(hass, "")
+    # Not even host/port move without a token: the stored one would go there.
+    result = await _start_hassio(hass, "", host="elsewhere", port=1234)
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
-    assert entry.data[CONF_TOKEN] == "good-token"
+    assert entry.data == before
+    assert aioclient_mock.call_count == 0
+
+
+@pytest.mark.parametrize("token", ["", "attacker-token"])
+async def test_hassio_foreign_add_on_changes_nothing_and_is_sent_nothing(
+    hass, aioclient_mock, caplog, token
+):
+    """Any add-on can announce `opengym`. Only the one that created the entry counts.
+
+    Without the pin, an announcement with an empty token re-points the entry at
+    the announcer's host and the next poll hands it the stored token. A slug
+    that merely ends in "_opengym" is another repository's add-on, not ours.
+    """
+    entry = await setup_entry(hass, aioclient_mock, summary(ALEX))
+    before = dict(entry.data)
+    aioclient_mock.get("http://evil-addon:9999/ha/v1/summary", json=summary(ALEX))
+    requests = aioclient_mock.call_count
+
+    result = await _start_hassio(
+        hass, token, host="evil-addon", port=9999, slug="0123abcd_opengym"
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "not_opengym_addon"
+    assert result["description_placeholders"] == {"addon": "openGym", "slug": "0123abcd_opengym"}
+    assert entry.data == before
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+    assert aioclient_mock.call_count == requests  # no probe, no reload, nothing sent
+    assert "0123abcd_opengym" in caplog.text
+
+
+async def test_hassio_ignored_add_on_entry_stays_ignored(hass, aioclient_mock, caplog):
+    ignored = MockConfigEntry(
+        domain=DOMAIN, unique_id=ADDON_UNIQUE_ID, source=config_entries.SOURCE_IGNORE, data={}
+    )
+    ignored.add_to_hass(hass)
+
+    result = await _start_hassio(hass, TOKEN)
+
+    assert result["reason"] == "already_configured"
+    assert ignored.data == {}
+    assert aioclient_mock.call_count == 0
+    assert "Ignored an openGym announcement" not in caplog.text
 
 
 async def test_hassio_rediscovery_reloads_a_loaded_entry(hass, aioclient_mock):
@@ -265,6 +343,7 @@ async def test_hassio_folds_into_manual_entry_for_same_host(hass, aioclient_mock
         data={CONF_HOST: HOST.upper(), CONF_PORT: PORT, CONF_TOKEN: "old"},
     )
     manual.add_to_hass(hass)
+    aioclient_mock.get(SUMMARY_URL, json=summary(ALEX))
 
     result = await _start_hassio(hass, "minted")
 
@@ -273,10 +352,34 @@ async def test_hassio_folds_into_manual_entry_for_same_host(hass, aioclient_mock
     assert manual.data[CONF_TOKEN] == "minted"
     assert manual.unique_id == f"{HOST}:{PORT}"  # not re-keyed
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
-    assert aioclient_mock.call_count == 0
+    # Checked against the entry's own address before it was stored.
+    [(_, url, _, headers)] = aioclient_mock.mock_calls
+    assert str(url) == SUMMARY_URL
+    assert headers["Authorization"] == "Bearer minted"
 
 
-async def test_hassio_fold_with_empty_token_keeps_manual_token(hass):
+async def test_hassio_fold_refuses_a_token_the_gateway_rejects(hass, aioclient_mock):
+    """A manual entry is pinned to no add-on: any add-on can claim its address.
+
+    So the advertised token is stored only if openGym there accepts it; a
+    foreign add-on cannot swap in a token of its own.
+    """
+    manual = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"{HOST}:{PORT}",
+        data={CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: "good"},
+    )
+    manual.add_to_hass(hass)
+    aioclient_mock.get(SUMMARY_URL, status=401)
+
+    result = await _start_hassio(hass, "bogus", slug="0123abcd_evil")
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "invalid_auth"
+    assert manual.data[CONF_TOKEN] == "good"
+
+
+async def test_hassio_fold_with_empty_token_keeps_manual_token(hass, aioclient_mock):
     manual = MockConfigEntry(
         domain=DOMAIN,
         unique_id=f"{HOST}:{PORT}",
@@ -288,6 +391,7 @@ async def test_hassio_fold_with_empty_token_keeps_manual_token(hass):
 
     assert result["reason"] == "already_configured"
     assert manual.data[CONF_TOKEN] == "good"
+    assert aioclient_mock.call_count == 0
 
 
 async def test_hassio_does_not_fold_a_different_host(hass, aioclient_mock):
@@ -321,7 +425,12 @@ async def test_reauth_stores_new_token(hass, aioclient_mock):
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
-    assert entry.data == {CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: "fresh-token"}
+    assert entry.data == {
+        CONF_HOST: HOST,
+        CONF_PORT: PORT,
+        CONF_TOKEN: "fresh-token",
+        CONF_ADDON_SLUG: ADDON_SLUG,
+    }
     probe = calls(aioclient_mock, "get", "/ha/v1/summary")[0]
     assert probe[3]["Authorization"] == "Bearer fresh-token"
 

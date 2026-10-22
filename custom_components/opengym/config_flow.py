@@ -8,6 +8,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
+    SOURCE_IGNORE,
     ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
@@ -25,6 +26,7 @@ from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 
 from .const import (
     ADDON_UNIQUE_ID,
+    CONF_ADDON_SLUG,
     CONF_HOST,
     CONF_PORT,
     CONF_TOKEN,
@@ -60,6 +62,8 @@ class OpenGymConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._discovered: dict[str, Any] | None = None
+        # The announcing add-on's name and slug, shown in the confirm dialog.
+        self._addon: dict[str, str] = {}
 
     async def _async_validate(self, host: str, port: int, token: str) -> str | None:
         """Probe the authenticated summary; return a translated error key or None.
@@ -85,20 +89,39 @@ class OpenGymConfigFlow(ConfigFlow, domain=DOMAIN):
         host = str(config[CONF_HOST])
         port = int(config.get(CONF_PORT, DEFAULT_PORT))
         token = str(config.get(CONF_TOKEN) or "")
+        self._addon = {"addon": discovery_info.name, "slug": discovery_info.slug}
 
         # First without raise_on_progress: on HA 2024.11 an open REAUTH flow
         # for the add-on entry carries the same unique id, and the default
         # check would abort this rediscovery as "already_in_progress" — the
         # one flow that can deliver the token the reauth is waiting for.
         # (Newer cores skip reauth flows in that check themselves.)
-        await self.async_set_unique_id(ADDON_UNIQUE_ID, raise_on_progress=False)
+        entry = await self.async_set_unique_id(ADDON_UNIQUE_ID, raise_on_progress=False)
 
-        # Refresh host/port, and the token ONLY when one was advertised: a
-        # re-fired discovery carrying "" must never wipe a working token.
+        updates: dict[str, Any] | None = None
+        if entry is not None and entry.source != SOURCE_IGNORE:
+            # Any add-on can list `discovery: [opengym]` and announce itself
+            # here. The entry belongs to the add-on whose discovery created it:
+            # an announcement from any other add-on changes nothing and is sent
+            # nothing (it would otherwise re-point the entry at its own host
+            # and be handed the stored token on the next poll).
+            if entry.data.get(CONF_ADDON_SLUG) != discovery_info.slug:
+                _LOGGER.warning(
+                    "Ignored an openGym announcement from the add-on %r: openGym is set "
+                    "up from the add-on %r. If you reinstalled openGym from another "
+                    "repository, delete the openGym integration and add it again",
+                    discovery_info.slug,
+                    entry.data.get(CONF_ADDON_SLUG),
+                )
+                return self.async_abort(
+                    reason="not_opengym_addon", description_placeholders=self._addon
+                )
+            # Re-point host/port only together with a token from the same
+            # announcement, so the stored token never goes to a new address;
+            # one carrying "" changes nothing (and never wipes a working token).
+            if token:
+                updates = {CONF_HOST: host, CONF_PORT: port, CONF_TOKEN: token}
         # Reloads the entry when its data changed (if loaded or retrying).
-        updates: dict[str, Any] = {CONF_HOST: host, CONF_PORT: port}
-        if token:
-            updates[CONF_TOKEN] = token
         self._abort_if_unique_id_configured(updates=updates)
 
         # No add-on entry yet: now refuse a second concurrent discovery flow.
@@ -113,20 +136,27 @@ class OpenGymConfigFlow(ConfigFlow, domain=DOMAIN):
         for entry in self._async_current_entries(include_ignore=False):
             if _target(entry.data) != discovered:
                 continue
-            if (
-                token
-                and self.hass.config_entries.async_update_entry(
+            if token and token != entry.data.get(CONF_TOKEN):
+                # A manual entry belongs to no add-on, so any add-on can claim
+                # its address. Store the advertised token only once openGym at
+                # that address (the user's own, not a new one) accepts it.
+                if error := await self._async_validate(host, port, token):
+                    return self.async_abort(reason=error)
+                if self.hass.config_entries.async_update_entry(
                     entry, data={**entry.data, CONF_TOKEN: token}
-                )
-                and entry.state in (ConfigEntryState.LOADED, ConfigEntryState.SETUP_RETRY)
-            ):
-                self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                ) and entry.state in (ConfigEntryState.LOADED, ConfigEntryState.SETUP_RETRY):
+                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
             return self.async_abort(reason="already_configured")
 
         # Probe before offering, so a stopped add-on cannot create a dead entry.
         if error := await self._async_validate(host, port, token):
             return self.async_abort(reason=error)
-        self._discovered = {CONF_HOST: host, CONF_PORT: port, CONF_TOKEN: token}
+        self._discovered = {
+            CONF_HOST: host,
+            CONF_PORT: port,
+            CONF_TOKEN: token,
+            CONF_ADDON_SLUG: discovery_info.slug,
+        }
         return await self.async_step_hassio_confirm()
 
     async def async_step_hassio_confirm(
@@ -138,7 +168,7 @@ class OpenGymConfigFlow(ConfigFlow, domain=DOMAIN):
         self._set_confirm_only()
         return self.async_show_form(
             step_id="hassio_confirm",
-            description_placeholders={"addon": "openGym"},
+            description_placeholders=self._addon,
         )
 
     # ------------------------------------------------------------------

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from homeassistant.setup import async_setup_component
 
-from custom_components.opengym.const import CONF_HOST, CONF_PORT, CONF_TOKEN
+from custom_components.opengym.const import CONF_ADDON_SLUG, CONF_HOST, CONF_PORT, CONF_TOKEN
 from custom_components.opengym.tests.common import (
+    ADDON_SLUG,
     ALEX,
     HOST,
     PORT,
@@ -26,6 +27,11 @@ async def test_diagnostics_redacts_the_token(hass, aioclient_mock, hass_client):
     data = (await response.json())["data"]
 
     assert TOKEN not in body
-    assert data["entry"] == {CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: "**REDACTED**"}
+    assert data["entry"] == {
+        CONF_HOST: HOST,
+        CONF_PORT: PORT,
+        CONF_TOKEN: "**REDACTED**",
+        CONF_ADDON_SLUG: ADDON_SLUG,
+    }
     assert data["profiles"] == {ALEX["id"]: ALEX}
     assert data["last_update_success"] is True

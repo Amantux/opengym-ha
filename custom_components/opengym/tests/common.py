@@ -13,6 +13,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.opengym.const import (
     ADDON_UNIQUE_ID,
+    CONF_ADDON_SLUG,
     CONF_HOST,
     CONF_PORT,
     CONF_TOKEN,
@@ -22,6 +23,8 @@ from custom_components.opengym.const import (
 HOST = "local-opengym"
 PORT = 8099
 TOKEN = "integration-token-123"
+# The Supervisor slug of a locally installed add-on with `slug: opengym`.
+ADDON_SLUG = "local_opengym"
 BASE = f"http://{HOST}:{PORT}"
 SUMMARY_URL = f"{BASE}/ha/v1/summary"
 
@@ -108,12 +111,10 @@ def summary(*profiles: dict[str, Any]) -> dict[str, Any]:
 
 
 def make_entry(hass, token: str = TOKEN, unique_id: str = ADDON_UNIQUE_ID) -> MockConfigEntry:
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="openGym",
-        unique_id=unique_id,
-        data={CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: token},
-    )
+    data: dict[str, Any] = {CONF_HOST: HOST, CONF_PORT: PORT, CONF_TOKEN: token}
+    if unique_id == ADDON_UNIQUE_ID:
+        data[CONF_ADDON_SLUG] = ADDON_SLUG  # made by that add-on's discovery
+    entry = MockConfigEntry(domain=DOMAIN, title="openGym", unique_id=unique_id, data=data)
     entry.add_to_hass(hass)
     return entry
 
