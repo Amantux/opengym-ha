@@ -324,13 +324,29 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add opengym/config.yaml custom_components/opengym/manifest.json opengym/CHANGELOG.md
           git commit -m "chore: bump version ${OLD} → ${NEW}"
-          git push origin "HEAD:${BRANCH}"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # The bump sits on the commit this run tested; it is never rebased onto
+          # a newer main, which would release commits whose tests have not run.
+          # When main moved past this commit while CI ran (a second push waits in
+          # the concurrency group), the push is rejected, and the newer push's own
+          # run bumps and releases a tree that includes this commit: not a failure.
+          if git push origin "HEAD:${BRANCH}"; then
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin "$BRANCH"
+          if git merge-base --is-ancestor "$GITHUB_SHA" "origin/$BRANCH" \
+            && [ "$(git rev-parse "origin/$BRANCH")" != "$GITHUB_SHA" ]; then
+            echo "::notice::${BRANCH} moved past ${GITHUB_SHA} while CI ran; the newer run bumps and releases."
+            exit 0
+          fi
+          echo "::error::could not push the version bump to ${BRANCH}, and ${BRANCH} has not moved past this commit"
+          exit 1
 
   # Cut a GitHub release/tag per version: HACS reads releases to offer updates
   # to the integration, and the add-on store shows the version from config.yaml
   # at the tagged commit. Tags the bump commit, whose files already hold the
-  # new version.
+  # new version; with no bump pushed (main moved on, see bump-version) there is
+  # nothing to tag and the newer run releases.
   release:
     name: GitHub release (HACS)
     runs-on: ubuntu-latest
@@ -339,7 +355,8 @@ jobs:
     timeout-minutes: 10
     if: >
       github.event_name == 'push' &&
-      !startsWith(github.event.head_commit.message, 'chore: bump version')
+      !startsWith(github.event.head_commit.message, 'chore: bump version') &&
+      needs.bump-version.outputs.bump_sha != ''
     needs: [bump-version]
     steps:
       - name: Create release v${{ needs.bump-version.outputs.new_version }}
