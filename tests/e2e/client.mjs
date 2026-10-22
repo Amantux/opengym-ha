@@ -17,6 +17,8 @@ import net from 'node:net';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
+import { syntheticMp4 } from './mp4.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ADDON_IP = '172.30.33.10';
@@ -63,6 +65,49 @@ function request(method, url, { headers = [], body } = {}) {
     req.on('timeout', () => req.destroy(new Error(`timeout: ${method} ${url}`)));
     req.on('error', reject);
     if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+/**
+ * A request with a binary body, in 1 MiB writes. `chunked` sends no length, the way the
+ * Supervisor streams a POST to an add-on with ingress_stream; otherwise Content-Length is set,
+ * the way a browser sends a Blob.
+ */
+function sendBody(method, url, buf, { headers = [], chunked = false, contentType = 'video/mp4' } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const flat = ['Host', u.host, 'Content-Type', contentType, ...headers.flat()];
+    flat.push(...(chunked ? ['Transfer-Encoding', 'chunked'] : ['Content-Length', String(buf.length)]));
+    const req = http.request({ method, host: u.hostname, port: u.port || 80, path: u.pathname + u.search, headers: flat, timeout: 60_000, agent: false }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let json;
+        try { json = JSON.parse(text); } catch { json = undefined; }
+        resolve({ status: res.statusCode, headers: res.headers, text, json });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error(`timeout: ${method} ${url}`)));
+    // A proxy refusing a big body may answer and close before reading it all.
+    req.on('error', err => (err.code === 'EPIPE' || err.code === 'ECONNRESET' ? null : reject(err)));
+    for (let i = 0; i < buf.length; i += 1 << 20) req.write(buf.subarray(i, i + (1 << 20)));
+    req.end();
+  });
+}
+
+/** GET a body as raw bytes. */
+function getBytes(url) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = http.request({ method: 'GET', host: u.hostname, port: u.port || 80, path: u.pathname, headers: ['Host', u.host], timeout: 60_000, agent: false }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('timeout', () => req.destroy(new Error(`timeout: GET ${url}`)));
+    req.on('error', reject);
     req.end();
   });
 }
@@ -134,9 +179,9 @@ async function phaseDefault() {
   check('ingress GET /: 200 html', index.status === 200 && /text\/html/.test(index.headers['content-type'] || '') && /<title>openGym<\/title>/.test(index.text), `${index.status} ${index.headers['content-type']}`);
   check('ingress GET /: X-Frame-Options SAMEORIGIN', index.headers['x-frame-options'] === 'SAMEORIGIN', index.headers['x-frame-options']);
   check("ingress GET /: CSP frame-ancestors 'self'", /frame-ancestors 'self'/.test(index.headers['content-security-policy'] || ''), index.headers['content-security-policy']);
-  // The video cap is lowered to fit the Supervisor's 16 MiB ingress body limit (entrypoint).
+  // No add-on cap on videos: big uploads stream through ingress (checked below).
   const config = await viaIngress(A, 'GET', '/api/config');
-  check('ingress GET /api/config: media.videoMB is 15 (under the Supervisor\'s 16 MiB body limit)', config.status === 200 && config.json?.media?.videoMB === 15, `${config.status} ${config.text}`);
+  check('ingress GET /api/config: media.videoMB is upstream\'s 40', config.status === 200 && config.json?.media?.videoMB === 40, `${config.status} ${config.text}`);
   const asset = await viaIngress(A, 'GET', '/icon-512.png');
   check('ingress static asset: 200 image, SAMEORIGIN', asset.status === 200 && /image\/png/.test(asset.headers['content-type'] || '') && asset.headers['x-frame-options'] === 'SAMEORIGIN', `${asset.status} ${asset.headers['content-type']} ${asset.headers['x-frame-options']}`);
 
@@ -217,6 +262,25 @@ async function phaseDefault() {
   const pB1 = sum1.json?.profiles?.find(p => p.id === bId);
   check('profile B is untouched', pB1?.body_weight === null && pB1?.rev === 0, pB1);
 
+  // --- a 30 MiB video from the sidebar ------------------------------------------------------------
+  // The fake ingress refuses a non-POST body over 16 MiB, as the Supervisor's ingress proxy does
+  // (it reads such bodies whole, capped at 16 MiB) and passes a POST through streamed, as the
+  // Supervisor does for an add-on with ingress_stream. web/ha-ingress.js turns the app's PUT
+  // into that POST; the gateway turns it back.
+  const video = syntheticMp4(30 * 1024 * 1024);
+  const hash = crypto.createHash('sha256').update(video).digest('hex');
+  const mediaPath = `/api/media/${hash}`;
+  const plainPut = await sendBody('PUT', INGRESS + A.prefix + mediaPath, video, { headers: [['Sec-Fetch-Site', 'same-origin']] });
+  check('a plain 30 MiB PUT through ingress is refused by the (emulated) Supervisor limit: 413', plainPut.status === 413, `${plainPut.status} ${plainPut.text.slice(0, 200)}`);
+  const tunnelled = await sendBody('POST', INGRESS + A.prefix + mediaPath, video, { chunked: true, headers: [['Sec-Fetch-Site', 'same-origin'], ['X-OpenGym-Method', 'PUT']] });
+  check('the same 30 MiB video as a streamed POST + X-OpenGym-Method: PUT: 201 from openGym', tunnelled.status === 201 && tunnelled.json?.ok === true && tunnelled.json?.hash === hash
+    && tunnelled.json?.mime === 'video/mp4' && tunnelled.json?.size === video.length, `${tunnelled.status} ${tunnelled.text.slice(0, 200)}`);
+  const back = await getBytes(INGRESS + A.prefix + mediaPath);
+  check('the uploaded video plays back through ingress byte for byte', back.status === 200 && back.body.length === video.length
+    && crypto.createHash('sha256').update(back.body).digest('hex') === hash, `${back.status} ${back.body.length}`);
+  const asB = await getBytes(INGRESS + B.prefix + mediaPath);
+  check('another HA user cannot fetch it (media is per profile)', asB.status === 404, `${asB.status}`);
+
   sweepIngressFraming();
   // For run.sh: the profile ids the later phases must find again.
   console.log(`E2E_IDS ${aId || ''} ${bId || ''}`);
@@ -257,6 +321,10 @@ async function phaseExternalUrl() {
   check('external_url set: ingress responses still SAMEORIGIN', ingressPage.headers['x-frame-options'] === 'SAMEORIGIN', ingressPage.headers['x-frame-options']);
   const h = await integration('GET', '/ha/v1/profiles');
   check('external_url set: the integration API still works', h.status === 200 && (h.json?.profiles || []).length === 2, `${h.status}`);
+  // The upload tunnel is for the ingress peer only: on direct access the POST stays a POST,
+  // which openGym has no route for.
+  const directTunnel = await sendBody('POST', `${ADDON}/api/media/${'ab'.repeat(32)}`, Buffer.from('x'), { headers: [['X-OpenGym-Method', 'PUT']] });
+  check('external_url set: a direct POST + X-OpenGym-Method: PUT is not turned into a PUT (404)', directTunnel.status === 404, `${directTunnel.status} ${directTunnel.text}`);
   sweepIngressFraming();
 }
 

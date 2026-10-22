@@ -64,6 +64,17 @@ COPY gateway/package.json /opt/gateway/package.json
 COPY gateway/src/ /opt/gateway/src/
 
 COPY --from=web /usr/share/nginx/html/ /usr/share/nginx/html/
+# The gateway's page-side half (contract §6 step 6): loaded before the app, so the app's photo
+# and video uploads can stream through ingress. It does nothing outside ingress. ?v= makes a
+# browser fetch the new copy after an update. The build fails unless upstream's index.html has
+# exactly one <head> to put it in.
+COPY gateway/web/ha-ingress.js /usr/share/nginx/html/ha-ingress.js
+RUN node -e '\
+  const fs = require("fs"); const f = "/usr/share/nginx/html/index.html"; \
+  const html = fs.readFileSync(f, "utf8"); const n = html.split("<head>").length - 1; \
+  if (n !== 1) { console.error(`index.html: expected one <head>, found ${n}`); process.exit(1); } \
+  fs.writeFileSync(f, html.replace("<head>", `<head>\n<script src="./ha-ingress.js?v=${process.argv[1]}"></script>`));' \
+  "${BUILD_VERSION}"
 COPY --from=web /etc/nginx/templates/default.conf.template /etc/opengym/nginx/default.conf.template
 
 # Our nginx main config (replaces the package's) and the entrypoint.

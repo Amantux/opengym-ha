@@ -17,6 +17,11 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:dumbbell
 panel_title: openGym
+# Stream request bodies from the sidebar instead of reading them into memory (16 MiB at most).
+# The Supervisor does that only for POST, so the add-on's page script sends photo and video
+# uploads as POST and the gateway turns them back into the PUT openGym expects. Without it, a
+# video over 16 MiB cannot be added from the sidebar.
+ingress_stream: true
 # Every household member gets the sidebar panel, not just HA admins: each one signs in to
 # their own openGym profile. Who administers openGym is decided inside openGym (the first
 # person to open it), not by Home Assistant's admin flag.

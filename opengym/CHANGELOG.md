@@ -15,7 +15,8 @@ First release: openGym 1.4.1 as a Home Assistant add-on.
   `opengym_workout_completed`, which fires for a workout just logged, not for imported history.
 - Optional direct access through your own https reverse proxy (`external_url`), for the openGym
   phone app and passkeys. Off by default: without it, only Home Assistant can reach openGym.
-- Videos you add are limited to 15 MB, so uploads fit through Home Assistant.
+- Photos and videos upload from the sidebar at openGym's own limits (videos up to 40 MB),
+  streamed past Home Assistant's 16 MiB limit on ordinary uploads.
 - Built on your device from the official openGym images, so the licensed exercise media is
   never re-hosted. Data lives in the add-on's own folder and is included in Home Assistant
   backups, which run without stopping openGym.

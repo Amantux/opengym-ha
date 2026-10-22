@@ -22,6 +22,8 @@
 import { createRequire } from 'node:module';
 import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { syntheticMp4 } from './mp4.mjs';
 
 const require = createRequire(import.meta.url);
 const OUT = process.argv[2] || '/screens';
@@ -108,6 +110,37 @@ async function assertSignedIn(label, target) {
   check(`${label}: the app routed to its home screen`, hash === '#/home', hash);
 }
 
+/**
+ * A 20 MiB video uploaded the way openGym uploads (frontend/src/lib/api.js apiUpload: an
+ * XMLHttpRequest PUT of a Blob to api/media/<sha256>), from inside the frame. The fake ingress
+ * refuses a non-POST body over 16 MiB like the Supervisor, so this only passes when
+ * web/ha-ingress.js has turned the PUT into the streamed POST the gateway turns back.
+ */
+async function assertBigUpload(label, target) {
+  const video = syntheticMp4(20 * 1024 * 1024);
+  const hash = crypto.createHash('sha256').update(video).digest('hex');
+  // Only the first 32 and last 116 bytes are not zero: send those, rebuild the rest in the page.
+  const head = [...video.subarray(0, 32)];
+  const tail = [...video.subarray(video.length - 116)];
+  const got = await target.evaluate(async ({ head, tail, size, hash }) => {
+    const bytes = new Uint8Array(size);
+    bytes.set(head, 0);
+    bytes.set(tail, size - tail.length);
+    const patched = XMLHttpRequest.prototype.open.opengymIngress === true;
+    const res = await new Promise(resolve => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', `api/media/${hash}`);
+      xhr.setRequestHeader('Content-Type', 'video/mp4');
+      xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText.slice(0, 300) });
+      xhr.onerror = () => resolve({ status: 0, body: 'network error' });
+      xhr.send(new Blob([bytes], { type: 'video/mp4' }));
+    });
+    return { patched, ...res };
+  }, { head, tail, size: video.length, hash });
+  check(`${label}: the ingress upload script is loaded`, got.patched === true, got);
+  check(`${label}: a 20 MiB video uploads from the page (XHR PUT, as openGym does): 201`, got.status === 201, got);
+}
+
 const { chromium } = loadPlaywright();
 const browser = await launch(chromium);
 try {
@@ -124,6 +157,7 @@ try {
     const frame = await frameEl.contentFrame();
     check('the panel iframe has a document (framing allowed)', !!frame);
     if (frame) await assertSignedIn('panel iframe', frame);
+    if (frame) await assertBigUpload('panel iframe', frame);
     // Let images and fonts settle so the picture is the real one, not a half-painted frame.
     await page.waitForTimeout(1_500);
     await shoot(page, 'panel-iframe-1280x800.png');

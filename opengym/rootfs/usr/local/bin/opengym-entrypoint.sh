@@ -89,13 +89,6 @@ gateway_cmd() {
 # Upstream's api with the contract §3 environment. Same exec rule as gateway_cmd. HOST
 # binds it to loopback (our patch), so only the gateway, nginx and the health probe below
 # reach it. DEFAULT_LANG is exported only when an option set it (contract §3).
-#
-# MEDIA_VIDEO_MAX_MB=15 (upstream's default is 40): the Supervisor's ingress proxy reads every
-# request body whole (it streams only POST, and only with ingress_stream; the app uploads
-# media with PUT /api/media/{hash}) into an aiohttp app whose client_max_size is 16 MiB
-# (supervisor/api/__init__.py MAX_CLIENT_SIZE = 1024**2 * 16), so a bigger upload from the
-# sidebar fails inside the Supervisor. The app reads this cap from /api/config and refuses a
-# bigger video up front, with its own clear message. Photos (2) and GIFs (8) already fit.
 start_api() {
   if [ -n "$RESOLVED_DEFAULT_LANG" ]; then
     set -- DEFAULT_LANG="$RESOLVED_DEFAULT_LANG"
@@ -116,7 +109,6 @@ start_api() {
     INVITE_ONLY="$RESOLVED_INVITE_ONLY" \
     ALLOW_GUEST="$RESOLVED_ALLOW_GUEST" \
     HA_INTERNAL_SOCKET=/run/opengym/internal.sock \
-    MEDIA_VIDEO_MAX_MB=15 \
     NODE_ENV=production \
     "$@" \
     gosu app node server.js
