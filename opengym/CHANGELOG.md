@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Maintenance release; no user-visible change.
+
 ## 0.1.0
 
 First release: openGym 1.4.1 as a Home Assistant add-on.
