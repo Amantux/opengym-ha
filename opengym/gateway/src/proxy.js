@@ -19,10 +19,11 @@ export function withoutHopByHop(headers) {
 export const NOT_RESPONDING = { error: 'openGym is not responding' };
 
 /**
- * Forward `req` to `target` (a URL) with `headers`, and stream the answer back.
+ * Forward `req` to `target` (a URL) with `headers` (and `method`, the request's own by default),
+ * and stream the answer back.
  * `rewriteResponseHeaders(headers)` may adjust the upstream response headers in place.
  */
-export function proxyRequest(req, res, { target, headers, rewriteResponseHeaders = null, log = console }) {
+export function proxyRequest(req, res, { target, method = req.method, headers, rewriteResponseHeaders = null, log = console }) {
   // The client can be gone already (it hung up while the gateway was minting its session); its
   // close events have fired, so an upstream request started now would never be cancelled.
   if (req.socket?.destroyed) return;
@@ -37,7 +38,7 @@ export function proxyRequest(req, res, { target, headers, rewriteResponseHeaders
     protocol: target.protocol,
     hostname: target.hostname,
     port: target.port,
-    method: req.method,
+    method,
     path: req.url,
     headers,
   });

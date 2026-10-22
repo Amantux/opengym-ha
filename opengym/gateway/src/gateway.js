@@ -8,7 +8,7 @@ import http from 'node:http';
 import { callApi, ApiUnavailable } from './api.js';
 import { logBodyWeight } from './bodyweight.js';
 import { InternalUnavailable } from './internal.js';
-import { addSessionCookie, rewriteIngressResponse, shouldDropOrigin, stripSessionCookies, utf8FromHeader } from './ingress.js';
+import { addSessionCookie, ingressMethod, METHOD_HEADER, rewriteIngressResponse, shouldDropOrigin, stripSessionCookies, utf8FromHeader } from './ingress.js';
 import { BadRequest, readJsonBody, sendJson } from './json.js';
 import { NOT_RESPONDING, proxyRequest, withoutHopByHop } from './proxy.js';
 import { buildSummary, createStateReader } from './summary.js';
@@ -41,6 +41,7 @@ const printable = s => String(s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u202
 export function forwardHeaders(req, peer) {
   const headers = withoutHopByHop(req.headers);
   for (const name of Object.keys(headers)) if (name.startsWith('x-remote-user-')) delete headers[name];
+  delete headers[METHOD_HEADER];
   headers['x-forwarded-for'] = peer;
   headers['x-real-ip'] = peer;
   delete headers['cf-connecting-ip'];
@@ -134,7 +135,9 @@ export function createGateway({ config, internal, effectiveRoutineId, peerOf = s
 
     // 4. Response rewrites for HA's frame.
     const ingressPath = req.headers['x-ingress-path'];
-    proxyRequest(req, res, { target: web, headers, rewriteResponseHeaders: h => rewriteIngressResponse(h, ingressPath), log });
+    // 5. A media upload the page sent as POST goes on as its PUT (see ingressMethod).
+    const method = ingressMethod(req.method, pathname, req.headers);
+    proxyRequest(req, res, { target: web, method, headers, rewriteResponseHeaders: h => rewriteIngressResponse(h, ingressPath), log });
   }
 
   return async function handle(req, res) {

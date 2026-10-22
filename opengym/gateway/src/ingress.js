@@ -35,6 +35,21 @@ export function utf8FromHeader(value) {
   return Buffer.from(value, 'latin1').toString('utf8');
 }
 
+// Media uploads through ingress (contract §6 step 6). The Supervisor reads every ingress
+// request body into memory, capped at 16 MiB, except a POST to an add-on with
+// `ingress_stream: true`, which it streams. Upstream uploads photos and videos with
+// PUT /api/media/<sha256>, so web/ha-ingress.js, loaded into the page under ingress, sends those
+// uploads as POST with this header, and the gateway hands them on as the PUT they are. Only that
+// one route, only from the ingress peer: anything else keeps its method, and the header never
+// reaches upstream (forwardHeaders drops it from every request).
+export const METHOD_HEADER = 'x-opengym-method';
+const MEDIA_UPLOAD = /^\/api\/media\/[0-9a-f]{64}$/;
+
+/** The method to send upstream for an ingress request. */
+export function ingressMethod(method, pathname, headers) {
+  return method === 'POST' && headers[METHOD_HEADER] === 'PUT' && MEDIA_UPLOAD.test(pathname) ? 'PUT' : method;
+}
+
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**

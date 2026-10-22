@@ -206,6 +206,48 @@ test('Origin rule is ingress-only: a direct write keeps its Origin', async () =>
   assert.equal(web.seen[0].headers.origin, 'https://gym.example.com');
 });
 
+const MEDIA = `/api/media/${'ab'.repeat(32)}`;
+
+test('ingress media upload sent as POST + X-OpenGym-Method: PUT reaches upstream as that PUT, body whole', async () => {
+  const { web, gw } = await setup();
+  // Chunked and without a length, as the Supervisor streams it with ingress_stream.
+  const body = Buffer.alloc(3 * 1024 * 1024 + 7, 0x61);
+  const r = await request(gw.url, { method: 'POST', path: MEDIA, headers: [['X-OpenGym-Method', 'PUT'], ['Content-Type', 'video/mp4'], ['Transfer-Encoding', 'chunked']], body });
+  assert.equal(r.status, 200);
+  assert.equal(web.seen.length, 1);
+  assert.equal(web.seen[0].method, 'PUT');
+  assert.equal(web.seen[0].url, MEDIA);
+  assert.equal(web.seen[0].headers['x-opengym-method'], undefined, 'the tunnel header never reaches upstream');
+  assert.equal(web.seen[0].headers['content-type'], 'video/mp4');
+  assert.ok(body.equals(web.seen[0].body), 'every byte arrives');
+});
+
+test('the upload rewrite is that one route and header value, from the ingress peer only', async () => {
+  const { web, gw } = await setup();
+  const cases = [
+    ['POST', '/api/media/missing', 'PUT', 'POST'],          // the app's own POSTs on the same prefix
+    ['POST', `${MEDIA}x`, 'PUT', 'POST'],                  // not a sha256
+    ['POST', '/api/data', 'PUT', 'POST'],                  // the state sync is never re-routed
+    ['POST', MEDIA, 'DELETE', 'POST'],                     // only PUT can be asked for
+    ['POST', MEDIA, 'put', 'POST'],
+    ['POST', MEDIA, null, 'POST'],                         // no header, no rewrite
+    ['DELETE', MEDIA, 'PUT', 'DELETE'],                    // only a POST is rewritten
+    ['PUT', MEDIA, null, 'PUT'],                           // a real PUT is left as it is
+  ];
+  for (const [method, path, ask, expected] of cases) {
+    const headers = ask === null ? [] : [['X-OpenGym-Method', ask]];
+    await request(gw.url, { method, path, headers, body: method === 'GET' ? null : 'x' });
+    const seen = web.seen.at(-1);
+    assert.equal(seen.method, expected, `${method} ${path} asking ${ask}`);
+    assert.equal(seen.headers['x-opengym-method'], undefined, `${method} ${path}: header dropped`);
+  }
+
+  const direct = await setup({ peer: '192.168.1.9', directAccess: true });
+  await request(direct.gw.url, { method: 'POST', path: MEDIA, headers: [['X-OpenGym-Method', 'PUT']], body: 'x' });
+  assert.equal(direct.web.seen[0].method, 'POST', 'direct access is never rewritten');
+  assert.equal(direct.web.seen[0].headers['x-opengym-method'], undefined);
+});
+
 const FRAMING = {
   'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff',
   'Set-Cookie': ['gymsid=new; Path=/; HttpOnly', 'gymsid=; Path=/; Max-Age=0', '__Host-gymsid=n; Path=/; Secure', 'pref=1; Path=/'],
