@@ -64,7 +64,27 @@ caveats (sign-out under ingress, no offline mode under ingress).
    [Licence notes](#licence-notes) for why), which can take a few minutes.
 2. **Integration:** click the right button above (needs [HACS](https://hacs.xyz)), download
    **openGym**, restart Home Assistant, then accept the discovered openGym under *Settings →
-   Devices & services*.
+   Devices & services*. HACS keeps it updated from then on.
+
+   **No HACS?** Turn on the add-on's `install_integration` option and restart the add-on: it
+   copies the integration that ships with it into Home Assistant (never over a copy HACS or you
+   installed). Restart Home Assistant when the add-on log says so, then accept the discovered
+   openGym as above. The add-on's Documentation tab explains what that option can reach.
+
+## openGym's own guides and exercise library
+
+Everything inside the app is upstream openGym, so its own documentation applies as is:
+
+- [User guides](https://github.com/DuarteSantos8/openGym/tree/main/docs): the
+  [AI Coach](https://github.com/DuarteSantos8/openGym/blob/main/docs/AI_COACH.md),
+  [importing from Strong, Hevy and others](https://github.com/DuarteSantos8/openGym/blob/main/docs/DATA_IMPORTS.md),
+  [the phone app](https://github.com/DuarteSantos8/openGym/blob/main/docs/MOBILE.md) and the
+  [FAQ](https://github.com/DuarteSantos8/openGym/blob/main/docs/FAQ.md).
+- The [exercise library](https://github.com/DuarteSantos8/openGym/blob/main/catalogue/browse/README.md),
+  one page per body part, and how to [fix or translate an exercise](https://github.com/DuarteSantos8/openGym/blob/main/catalogue/README.md).
+  The add-on already contains all of it, pictures and animations included.
+- Bugs inside the app itself belong in [openGym's issues](https://github.com/DuarteSantos8/openGym/issues);
+  sign-in, sensors and the add-on belong [here](https://github.com/Amantux/opengym-ha/issues).
 
 ## How it works
 
