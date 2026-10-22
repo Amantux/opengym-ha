@@ -32,6 +32,8 @@ const DIRECT_OFF = "Direct access is turned off. Open openGym from the Home Assi
 const NO_DATA = 'This profile has no data yet. Log something in openGym as that person (a workout, a weigh-in or any setting), then try again.';
 
 const TOKEN = process.env.TOKEN || '';
+// Profiles beyond A and B that later phases must expect (run.sh: the screenshots' first open).
+const EXTRA = Number(process.env.EXTRA_PROFILES || 0);
 let failures = 0;
 let passes = 0;
 
@@ -299,8 +301,8 @@ async function phaseRestart() {
   check('after restart: HA user B signs in to the same profile', meB.status === 200 && meB.json?.user?.id === EXPECT_B, meB.text);
   const profiles = await integration('GET', '/ha/v1/profiles');
   const ids = (profiles.json?.profiles || []).map(p => p.id).sort();
-  check('after restart: the integration token from before still works and lists the same two profiles', profiles.status === 200
-    && ids.length === 2 && ids.includes(EXPECT_A) && ids.includes(EXPECT_B), `${profiles.status} ${profiles.text}`);
+  check('after restart: the integration token from before still works and lists the same profiles', profiles.status === 200
+    && ids.length === 2 + EXTRA && ids.includes(EXPECT_A) && ids.includes(EXPECT_B), `${profiles.status} ${profiles.text}`);
   const sum = await integration('GET', '/ha/v1/summary');
   const pA = sum.json?.profiles?.find(p => p.id === EXPECT_A);
   check('after restart: the weigh-in is still there', pA?.body_weight?.value === 80.2, pA);
@@ -325,7 +327,7 @@ async function phaseExternalUrl() {
   const ingressPage = await viaIngress(A, 'GET', '/');
   check('external_url set: ingress responses still SAMEORIGIN', ingressPage.headers['x-frame-options'] === 'SAMEORIGIN', ingressPage.headers['x-frame-options']);
   const h = await integration('GET', '/ha/v1/profiles');
-  check('external_url set: the integration API still works', h.status === 200 && (h.json?.profiles || []).length === 2, `${h.status}`);
+  check('external_url set: the integration API still works', h.status === 200 && (h.json?.profiles || []).length === 2 + EXTRA, `${h.status}`);
   // The upload tunnel is for the ingress peer only: on direct access the POST stays a POST,
   // which openGym has no route for.
   const directTunnel = await sendBody('POST', `${ADDON}/api/media/${'ab'.repeat(32)}`, Buffer.from('x'), { headers: [['X-OpenGym-Method', 'PUT']] });

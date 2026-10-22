@@ -74,10 +74,12 @@
   </div>
 </aside>
 <header id="panel-header"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg><span>openGym</span></header>
-<iframe id="panel" title="openGym" src="/api/hassio_ingress/abc/" allow="fullscreen"></iframe>
+<iframe id="panel" title="openGym" allow="fullscreen"></iframe>
 <script>
-  // ?user=xyz frames HA user B instead (screenshot.mjs: a brand-new user's first open).
-  if (new URLSearchParams(location.search).get('user') === 'xyz') document.getElementById('panel').src = '/api/hassio_ingress/xyz/';
+  // The frame's one load: HA user A by default, ?user=new for the never-seen user of
+  // screenshot.mjs's first open (fake-ingress.conf). Set once, so no load is ever cancelled.
+  const user = new URLSearchParams(location.search).get('user') === 'new' ? 'new' : 'abc';
+  document.getElementById('panel').src = `/api/hassio_ingress/${user}/`;
 </script>
 </body>
 </html>

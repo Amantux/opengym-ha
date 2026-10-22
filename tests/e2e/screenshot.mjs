@@ -30,7 +30,7 @@ const OUT = process.argv[2] || '/screens';
 const INGRESS = 'http://172.30.32.2';
 const APP = `${INGRESS}/api/hassio_ingress/abc/`;
 const USER_A = 'Alex Example';
-const USER_B = 'Zoë Ørsted';
+const USER_NEW = 'Maximiliane Ødegaard-Schönberger';
 
 function loadPlaywright() {
   const candidates = [process.env.PLAYWRIGHT_MODULE, 'playwright', '/usr/lib/node_modules/playwright',
@@ -213,20 +213,21 @@ try {
     check('panel (390x844): no frame-blocking console errors', frameBlocking(seen).length === 0, frameBlocking(seen));
     await context.close();
   }
-  // 4. A brand-new HA user's first open, on a phone in the panel: HA user B has no data at all
-  //    (client.mjs leaves profile B untouched), so this is what every household member sees the
-  //    first time. Top and bottom, plus the scroll sizes a screenshot cannot show.
+  // 4. A brand-new HA user's first open, on a phone in the panel. Nothing requests the "new"
+  //    ingress identity before this (fake-ingress.conf), so the frame's load is the very request
+  //    that creates the profile: what every household member sees the first time. A long,
+  //    non-ASCII display name, top and bottom, plus the scroll sizes a screenshot cannot show.
   {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
     const page = await context.newPage();
     const seen = watch(page, 'first-open-390x844');
-    const resp = await page.goto(`${INGRESS}/panel.html?user=xyz`, { waitUntil: 'load', timeout: 60_000 });
-    check('first open: panel.html?user=xyz loads', resp?.status() === 200, resp?.status());
+    const resp = await page.goto(`${INGRESS}/panel.html?user=new`, { waitUntil: 'load', timeout: 60_000 });
+    check('first open: panel.html?user=new loads', resp?.status() === 200, resp?.status());
     const frameEl = await page.waitForSelector('iframe#panel', { timeout: 10_000 });
     const frame = await frameEl.contentFrame();
     check('first open: the iframe has a document', !!frame);
     if (frame) {
-      await assertSignedIn('first open (390x844)', frame, USER_B);
+      await assertSignedIn('first open (390x844)', frame, USER_NEW);
       const data = await frame.evaluate(async () => {
         const r = await fetch('api/data', { credentials: 'same-origin' });
         return { status: r.status, body: await r.json().catch(() => null) };
@@ -248,11 +249,11 @@ try {
       seen.sizes = { frame: sizes, page: outer };
       check('first open: no sideways scroll inside the frame at 390', sizes.scrollWidth <= sizes.clientWidth, sizes);
       check('first open: HA\'s page itself never scrolls (one scroll area, the frame)', outer.scrollHeight <= outer.clientHeight && outer.scrollWidth <= outer.clientWidth, outer);
-      check('first open: no font failed to load', !sizes.fonts.some(f => f.endsWith(':error')), sizes.fonts);
       await page.waitForTimeout(800);
       await shoot(page, 'first-open-panel-390x844-bottom.png');
     }
     check('first open: no 5xx responses', serverErrors(seen).length === 0, serverErrors(seen));
+    check('first open: no request failed or was cancelled', seen.failedRequests.length === 0, seen.failedRequests);
     await context.close();
   }
 } catch (e) {

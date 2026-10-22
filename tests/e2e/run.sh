@@ -181,11 +181,13 @@ ha_sh() {
 TOKEN=""
 EXPECT_A=""
 EXPECT_B=""
+# Profiles beyond A and B: the screenshots' first open creates one (fake-ingress.conf "new").
+EXTRA_PROFILES=0
 PHASE_OUT=""
 client_phase() {
   local rc=0
   PHASE_OUT=$(docker exec -e TOKEN="$TOKEN" -e EXPECT_VERSION="$VERSION" -e EXPECT_A="$EXPECT_A" \
-    -e EXPECT_B="$EXPECT_B" "$CLIENT" node /e2e/client.mjs "$1" 2>&1) || rc=$?
+    -e EXPECT_B="$EXPECT_B" -e EXTRA_PROFILES="$EXTRA_PROFILES" "$CLIENT" node /e2e/client.mjs "$1" 2>&1) || rc=$?
   printf '%s\n' "$PHASE_OUT" | tee -a "$OUT/client.txt" | grep -v '^E2E_IDS ' || true
   local ok bad
   ok=$(printf '%s\n' "$PHASE_OUT" | grep -c '^ok - ' || true)
@@ -438,6 +440,7 @@ if [ -n "$SHOTS" ]; then
   PASSED=$((PASSED + $(printf '%s\n' "$shots_out" | grep -c '^ok - ' || true)))
   FAILED=$((FAILED + $(printf '%s\n' "$shots_out" | grep -c '^not ok - ' || true)))
   if [ "$shots_rc" -ne 0 ] && text_lacks "$shots_out" '^not ok - '; then fail "screenshot run exited $shots_rc"; fi
+  EXTRA_PROFILES=1
 fi
 
 echo "# phase 2: clean stop, restart, persistence"
