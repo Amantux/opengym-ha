@@ -8,6 +8,7 @@ own. The gateway's response body is never read on an error path, so nothing it
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -16,6 +17,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 from yarl import URL
 
 from .const import (
@@ -30,6 +32,9 @@ _LOGGER = logging.getLogger(__name__)
 # Generous for the write path: the gateway may GET + PUT the profile up to
 # three times when openGym reports a concurrent change (contract §7).
 _TIMEOUT = ClientTimeout(total=15)
+# With no earlier workout to compare with, a workout only counts as just
+# completed if it ended at most this long ago.
+_RECENT = timedelta(hours=24)
 
 
 class OpenGymError(Exception):
@@ -118,6 +123,20 @@ def _workout_order(workout: dict[str, Any]) -> tuple[str, str]:
     return (str(workout.get("date") or ""), str(workout.get("ended_at") or ""))
 
 
+def _is_recent(workout: dict[str, Any]) -> bool:
+    """Ended in the last 24 h; without an end time, dated today or yesterday.
+
+    "Yesterday" and "today" are in Home Assistant's time zone. Imported or
+    adopted history becomes a profile's first "last workout" too, and that is
+    not a workout someone just completed.
+    """
+    if ended := dt_util.parse_datetime(str(workout.get("ended_at") or "")):
+        return dt_util.utcnow() - ended <= _RECENT
+    day = dt_util.parse_date(str(workout.get("date") or ""))
+    today = dt_util.now().date()
+    return day is not None and today - timedelta(days=1) <= day <= today
+
+
 type OpenGymConfigEntry = ConfigEntry[OpenGymCoordinator]
 
 
@@ -137,7 +156,7 @@ class OpenGymCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             update_interval=SCAN_INTERVAL,
         )
         self.client = client
-        # profile id -> its last_workout at the previous successful refresh.
+        # profile id -> the last workout seen for it at a successful refresh.
         # None until the first refresh, so history that existed before Home
         # Assistant started watching never fires an event.
         self._last_workouts: dict[str, Any] | None = None
@@ -161,7 +180,14 @@ class OpenGymCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
 
     def _fire_workout_events(self, profiles: dict[str, dict[str, Any]]) -> None:
         previous = self._last_workouts
-        self._last_workouts = {pid: p.get("last_workout") for pid, p in profiles.items()}
+        # A poll without a workout for a profile (none yet, or a state file
+        # openGym could not read this time) keeps the one seen before, so the
+        # next good poll does not announce that workout again.
+        seen = previous or {}
+        self._last_workouts = {
+            pid: p["last_workout"] if isinstance(p.get("last_workout"), dict) else seen.get(pid)
+            for pid, p in profiles.items()
+        }
         if previous is None:
             return
         for pid, profile in profiles.items():
@@ -180,6 +206,10 @@ class OpenGymCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                     # Deleting the newest workout makes an older one "last"
                     # again — that is not a workout being completed.
                     continue
+            elif not _is_recent(new):
+                # The profile's first workout as far as we know: only an event
+                # if it just happened, not history that was imported.
+                continue
             self.hass.bus.async_fire(
                 EVENT_WORKOUT_COMPLETED,
                 {

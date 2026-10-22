@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 
+import pytest
 from aiohttp import ClientError
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import STATE_UNAVAILABLE
@@ -29,6 +30,8 @@ PUSH_B = {
     "routine_name": "Pull B",
     "duration_min": 45,
 }
+# 15 minutes after PUSH_B ended.
+NOW = "2026-10-22T18:00:00+00:00"
 
 
 def _with_workout(profile, workout):
@@ -73,13 +76,78 @@ async def test_event_fires_when_last_workout_changes(hass, aioclient_mock):
     assert len(events) == 1
 
 
-async def test_first_ever_workout_of_a_known_profile_fires(hass, aioclient_mock):
+async def test_first_ever_workout_of_a_known_profile_fires(hass, aioclient_mock, freezer):
+    freezer.move_to(NOW)
     events = async_capture_events(hass, EVENT_WORKOUT_COMPLETED)
     entry = await setup_entry(hass, aioclient_mock, summary(NOVA))
 
     await _refresh(hass, aioclient_mock, entry, json=summary(_with_workout(NOVA, PUSH_B)))
 
     assert [e.data["profile_id"] for e in events] == [NOVA["id"]]
+
+
+async def test_imported_history_is_not_a_completed_workout(hass, aioclient_mock, freezer):
+    """Nova imports her Strong history: her newest workout is from last year."""
+    freezer.move_to(NOW)
+    events = async_capture_events(hass, EVENT_WORKOUT_COMPLETED)
+    entry = await setup_entry(hass, aioclient_mock, summary(NOVA))
+    imported = {
+        **PUSH_B,
+        "id": "iw-strong-1",
+        "date": "2025-03-01",
+        "started_at": "2025-03-01T09:00:00.000Z",
+        "ended_at": "2025-03-01T10:00:00.000Z",
+    }
+
+    await _refresh(hass, aioclient_mock, entry, json=summary(_with_workout(NOVA, imported)))
+
+    assert events == []
+
+
+async def test_first_workout_ended_over_a_day_ago_does_not_fire(hass, aioclient_mock, freezer):
+    freezer.move_to("2026-10-23T17:46:00+00:00")  # 24 h and 1 min after PUSH_B ended
+    events = async_capture_events(hass, EVENT_WORKOUT_COMPLETED)
+    entry = await setup_entry(hass, aioclient_mock, summary(NOVA))
+
+    await _refresh(hass, aioclient_mock, entry, json=summary(_with_workout(NOVA, PUSH_B)))
+
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    ("date", "fires"),
+    [("2026-10-23", True), ("2026-10-22", True), ("2026-10-21", False)],
+)
+async def test_first_workout_without_end_time_must_be_dated_today_or_yesterday(
+    hass, aioclient_mock, freezer, date, fires
+):
+    # 12:30 UTC on the 22nd is already the 23rd in Auckland (NZDT): "today"
+    # and "yesterday" are Home Assistant's, not UTC's.
+    await hass.config.async_set_time_zone("Pacific/Auckland")
+    freezer.move_to("2026-10-22T12:30:00+00:00")
+    events = async_capture_events(hass, EVENT_WORKOUT_COMPLETED)
+    entry = await setup_entry(hass, aioclient_mock, summary(NOVA))
+    undated_end = {**PUSH_B, "date": date, "ended_at": None, "duration_min": None}
+
+    await _refresh(hass, aioclient_mock, entry, json=summary(_with_workout(NOVA, undated_end)))
+
+    assert len(events) == (1 if fires else 0)
+
+
+async def test_a_poll_without_the_workout_does_not_announce_it_again(
+    hass, aioclient_mock, freezer
+):
+    """openGym could not read the state file once: last_workout came back null."""
+    freezer.move_to(NOW)
+    events = async_capture_events(hass, EVENT_WORKOUT_COMPLETED)
+    entry = await setup_entry(hass, aioclient_mock, summary(ALEX))
+    await _refresh(hass, aioclient_mock, entry, json=summary(_with_workout(ALEX, PUSH_B)))
+    assert len(events) == 1
+
+    await _refresh(hass, aioclient_mock, entry, json=summary(_with_workout(ALEX, None)))
+    await _refresh(hass, aioclient_mock, entry, json=summary(_with_workout(ALEX, PUSH_B)))
+
+    assert len(events) == 1
 
 
 async def test_no_event_for_a_profile_seen_for_the_first_time(hass, aioclient_mock):
