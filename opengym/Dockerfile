@@ -80,7 +80,9 @@ HEALTHCHECK --interval=1m --timeout=5s --start-period=1m --retries=3 \
 
 # No USER line, on purpose: the container starts as root so the entrypoint can chown the
 # Supervisor-managed /data (whose ownership we don't control) and create /run/opengym. It then
-# runs every process (api, nginx, gateway, discovery) as `app` (uid 1000) through gosu.
+# runs every server (api, nginx, gateway) as `app` (uid 1000) through gosu. Supervisor
+# discovery alone stays root, so that SUPERVISOR_TOKEN never sits in an environment uid 1000
+# can read (see the entrypoint).
 ENTRYPOINT ["/usr/local/bin/opengym-entrypoint.sh"]
 # Upstream's CMD ["node", "server.js"] must never reach the entrypoint as arguments.
 CMD []

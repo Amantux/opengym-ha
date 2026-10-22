@@ -4,8 +4,14 @@
 # them, and exits with the real status of whichever one dies first.
 #
 # Root is used only for what needs root: chowning the Supervisor-managed /data, creating
-# /run/opengym and rendering nginx's config into a root-owned file. Every process started
-# here runs as `app` (uid 1000) through gosu.
+# /run/opengym, rendering nginx's config into a root-owned file and keeping SUPERVISOR_TOKEN
+# away from uid 1000. Every server started here runs as `app` (uid 1000) through gosu; the
+# one root child is Supervisor discovery (see there).
+#
+# SUPERVISOR_TOKEN is removed BEFORE gosu (`env -u SUPERVISOR_TOKEN gosu app ...`), never
+# after it: any app process can read the environment of every other one in
+# /proc/<pid>/environ, so a `gosu app env -u ...` would leave the token readable by the api
+# for as long as that `env` runs (a polling reader catches it).
 set -eu
 
 # Early stop handling, installed before anything else. PID 1 silently drops a signal it has
@@ -64,9 +70,9 @@ check_server() {
 # Run a gateway command (contract §3 environment) as `app`. It execs, so the caller's pid
 # IS the node process: call it only in a subshell, i.e. `gateway_cmd … &` or
 # `$(gateway_cmd …)`, never bare (that would replace this PID 1). SUPERVISOR_TOKEN is
-# removed here and handed back only to discovery, the one command that needs it.
+# removed here; only discovery, started as root below, gets it.
 gateway_cmd() {
-  exec gosu app env -u SUPERVISOR_TOKEN \
+  exec env -u SUPERVISOR_TOKEN \
     GATEWAY_PORT=8099 \
     OPENGYM_DATA_DIR=/data/opengym \
     GATEWAY_STATE_DIR=/data/gateway \
@@ -77,7 +83,7 @@ gateway_cmd() {
     HA_INTERNAL_SOCKET=/run/opengym/internal.sock \
     OPENGYM_HA_VERSION="$OPENGYM_HA_VERSION" \
     OPENGYM_VERSION="$OPENGYM_VERSION" \
-    "$@"
+    gosu app "$@"
 }
 
 # Upstream's api with the contract §3 environment. Same exec rule as gateway_cmd. HOST
@@ -90,7 +96,7 @@ start_api() {
     set --
   fi
   cd /app
-  exec gosu app env -u SUPERVISOR_TOKEN \
+  exec env -u SUPERVISOR_TOKEN \
     DATA_DIR=/data/opengym \
     HOST=127.0.0.1 \
     PORT=3000 \
@@ -105,7 +111,7 @@ start_api() {
     HA_INTERNAL_SOCKET=/run/opengym/internal.sock \
     NODE_ENV=production \
     "$@" \
-    node server.js
+    gosu app node server.js
 }
 
 if [ "$(id -u)" != 0 ]; then
@@ -252,17 +258,38 @@ until wget -q -T 2 -O /dev/null http://127.0.0.1:3000/api/health 2>/dev/null; do
 done
 log "api ready on 127.0.0.1:3000."
 
-gosu app env -u SUPERVISOR_TOKEN nginx -e stderr -g 'daemon off;' &
+env -u SUPERVISOR_TOKEN gosu app nginx -e stderr -g 'daemon off;' &
 NGINX_PID=$!
 gateway_cmd node /opt/gateway/src/server.js &
 GATEWAY_PID=$!
 log "gateway on port 8099 (ingress), nginx on 127.0.0.1:8080."
 
 # Home Assistant discovery: best effort and backgrounded (HA Core may not be up yet; the
-# command waits for the gateway and retries for about two minutes on its own, contract §8).
-# It always exits 0 and logs why when it skips, so the loop below only reports a crash.
+# command retries for about two minutes on its own, contract §8). It always exits 0 and logs
+# why when it skips, so the loop below only reports a crash.
+#
+# Under the Supervisor it runs as ROOT, not as app: it carries SUPERVISOR_TOKEN, which can
+# manage this add-on (its options, restart, uninstall), and as app that token would sit in a
+# /proc/<pid>/environ the api can read. Root's environment is closed to uid 1000. It is not a
+# server (it listens on nothing and exits after its two Supervisor calls), and it gets an
+# empty environment plus the four values it reads. Root never opens a path under the
+# app-owned /data, where a planted symlink would make it read, and announce, a root-only file
+# such as /proc/1/environ: the gateway creates the integration token before it listens, so
+# once it answers /healthz the token is read AS app into a root-only directory, which is the
+# state dir discovery is given.
 if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
-  gateway_cmd SUPERVISOR_TOKEN="$SUPERVISOR_TOKEN" node /opt/gateway/src/cli.js discovery &
+  tries=0
+  until wget -q -T 2 -O /dev/null http://127.0.0.1:8099/healthz 2>/dev/null || [ "$tries" -ge 60 ]; do
+    check_server "the gateway" "$GATEWAY_PID"
+    tries=$((tries + 1))
+    sleep 1
+  done
+  mkdir -p /run/opengym-discovery
+  chmod 0700 /run/opengym-discovery
+  env -u SUPERVISOR_TOKEN gosu app cat /data/gateway/integration_token \
+    >/run/opengym-discovery/integration_token 2>/dev/null || true
+  env -i PATH="$PATH" SUPERVISOR_TOKEN="$SUPERVISOR_TOKEN" GATEWAY_PORT=8099 \
+    GATEWAY_STATE_DIR=/run/opengym-discovery node /opt/gateway/src/cli.js discovery &
 else
   gateway_cmd node /opt/gateway/src/cli.js discovery &
 fi

@@ -9,11 +9,13 @@
 #   172.30.32.2   fake ingress (nginx): the ONE address the gateway trusts for HA identity
 #   172.30.32.3   assertion client (node): any other container on the network
 #   172.30.32.4   browser (Playwright), only with E2E_SCREENSHOT_DIR
+#   172.30.32.5   Supervisor stub (node, DNS name `supervisor`), last phase only
 #   172.30.33.10  the add-on, /data on a fresh volume holding options.json
 # and checks ingress sign-in, framing, the direct-access gate, the integration API and its
 # body-weight write, process privileges, clean stops, persistence across a restart, the
-# external_url mode, and a stop during boot. Every container, the network and the volume are
-# removed on exit, pass or fail; logs go to $E2E_OUT first. Exit status 1 if any check failed.
+# external_url mode, a stop during boot, and discovery under a Supervisor token (root, never
+# readable by uid 1000). Every container, the network and the volume are removed on exit, pass
+# or fail; logs go to $E2E_OUT first. Exit status 1 if any check failed.
 #
 # Environment (all optional):
 #   E2E_IMAGE            image tag to build/test           (opengym-ha:e2e)
@@ -47,10 +49,12 @@ INGRESS=$PREFIX-ingress
 CLIENT=$PREFIX-client
 BROWSER=$PREFIX-browser
 SEED=$PREFIX-seed
+SUPERVISOR=$PREFIX-supervisor
 SUBNET=172.30.32.0/23
 INGRESS_IP=172.30.32.2
 CLIENT_IP=172.30.32.3
 BROWSER_IP=172.30.32.4
+SUPERVISOR_IP=172.30.32.5
 ADDON_IP=172.30.33.10
 
 PASSED=0
@@ -69,7 +73,7 @@ die() {
 }
 
 remove_all() {
-  docker rm -f "$BROWSER" "$CLIENT" "$INGRESS" "$ADDON" "$SEED" >/dev/null 2>&1 || true
+  docker rm -f "$BROWSER" "$CLIENT" "$INGRESS" "$ADDON" "$SEED" "$SUPERVISOR" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   docker volume rm "$VOL" >/dev/null 2>&1 || true
 }
@@ -80,6 +84,7 @@ cleanup() {
   mkdir -p "$OUT"
   docker logs "$ADDON" >"$OUT/addon.log" 2>&1 || true
   docker logs "$INGRESS" >"$OUT/fake-ingress.log" 2>&1 || true
+  docker logs "$SUPERVISOR" >"$OUT/supervisor-stub.log" 2>&1 || true
   remove_all
   if [ "$status" -ne 0 ]; then echo "e2e: logs in $OUT" >&2; fi
   exit "$status"
@@ -154,7 +159,11 @@ log_has() { local l; l=$(addon_log); grep -qxF -- "$1" <<<"$l"; }
 log_lacks() { local l; l=$(addon_log); ! grep -qF -- "$1" <<<"$l"; }
 text_contains() { grep -qE -- "$2" <<<"$1"; }
 text_lacks() { ! grep -qE -- "$2" <<<"$1"; }
-count_comm() { awk -v c="$2" '$2 == c' <<<"$1" | wc -l; }
+count_role() { awk -v r="$2" '$7 == r' <<<"$1" | wc -l; }
+# The servers (api, gateway, nginx master and workers) all run as uid 1000, all four Uid fields.
+servers_run_as_app() {
+  [ -z "$(awk '($7 == "api" || $7 == "gateway" || $7 == "nginx") && !($3 == 1000 && $4 == 1000 && $5 == 1000 && $6 == 1000)' <<<"$1")" ]
+}
 exit_code() { docker inspect -f '{{.State.ExitCode}}' "$ADDON"; }
 # docker stop -t 15, then: exit status 0 and stopped well inside the timeout (no SIGKILL).
 stop_cleanly() {
@@ -166,14 +175,38 @@ stop_cleanly() {
   check "$1: docker stop -t 15 exits 0 (got $code)" [ "$code" = 0 ]
   check "$1: stopped in $((t1 - t0)) s, before the 15 s SIGKILL" [ $((t1 - t0)) -lt 15 ]
 }
-# pid, comm and the four Uid fields of every process in the add-on (from /proc, never the
-# cmdline: the scanning shell would match itself).
+# pid, comm, the four Uid fields and the role of every process in the add-on. The role comes
+# from the EXACT command line (a substring match would find the scanning shell's own script),
+# nginx's from its comm (it rewrites its command line): api, gateway, discovery, nginx, other.
 PROCS_SH=$(cat <<'EOF'
 for d in /proc/[0-9]*; do
   c=$(cat "$d/comm" 2>/dev/null) || continue
   u=$(sed -n 's/^Uid:[[:space:]]*//p' "$d/status" 2>/dev/null) || continue
-  [ -n "$u" ] && echo "${d#/proc/} $c $u"
+  a=$(tr '\0' ' ' 2>/dev/null <"$d/cmdline") || continue
+  case "$a" in
+    'node server.js ') r=api ;;
+    'node /opt/gateway/src/server.js ') r=gateway ;;
+    'node /opt/gateway/src/cli.js discovery ') r=discovery ;;
+    *) if [ "$c" = nginx ]; then r=nginx; else r=other; fi ;;
+  esac
+  [ -n "$u" ] && echo "${d#/proc/} $c $u $r"
 done
+EOF
+)
+# Run AS app (what the api could do): "<n> <pid:comm>...", the number of other processes whose
+# environment it can read, then each one whose environment holds SUPERVISOR_TOKEN.
+ENVIRON_SH=$(cat <<'EOF'
+n=0
+holders=""
+for d in /proc/[0-9]*; do
+  [ "${d#/proc/}" = "$$" ] && continue
+  e=$(tr '\0' '\n' 2>/dev/null <"$d/environ") || continue
+  n=$((n + 1))
+  if printf '%s\n' "$e" | grep -q '^SUPERVISOR_TOKEN='; then
+    holders="$holders ${d#/proc/}:$(cat "$d/comm" 2>/dev/null)"
+  fi
+done
+echo "$n$holders"
 EOF
 )
 
@@ -228,11 +261,11 @@ check "the integration token never appears in the log" log_lacks "$TOKEN"
 
 procs=$(in_addon sh -c "$PROCS_SH")
 printf '%s\n' "$procs" >"$OUT/processes.txt"
-servers=$(printf '%s\n' "$procs" | awk '$2 == "node" || $2 == "nginx"')
-check "two node servers (api, gateway) are running" [ "$(count_comm "$servers" node)" -ge 2 ]
-check "nginx (master and worker) is running" [ "$(count_comm "$servers" nginx)" -ge 2 ]
-check "every node and nginx process runs as uid 1000 (real, effective, saved, fs)" \
-  [ -z "$(printf '%s\n' "$servers" | awk '!($3 == 1000 && $4 == 1000 && $5 == 1000 && $6 == 1000)')" ]
+check "the api (node server.js) is running, once" [ "$(count_role "$procs" api)" -eq 1 ]
+check "the gateway (node /opt/gateway/src/server.js) is running, once" [ "$(count_role "$procs" gateway)" -eq 1 ]
+check "nginx (master and worker) is running" [ "$(count_role "$procs" nginx)" -ge 2 ]
+check "every server (api, gateway, nginx) runs as uid 1000 (real, effective, saved, fs)" \
+  servers_run_as_app "$procs"
 SECRET_SUM=$(in_addon sha256sum /data/opengym/secret | cut -d' ' -f1)
 
 if [ -n "$SHOTS" ]; then
@@ -282,6 +315,54 @@ printf '%s\n' "$boot_log" >"$OUT/boot-stop.txt"
 check "the TERM arrived during boot (the gateway never started)" text_lacks "$boot_log" 'gateway on port 8099'
 check "the entrypoint handled it (stop requested during startup / stopping.)" \
   text_contains "$boot_log" 'stop requested during startup|openGym: stopping\.'
+
+echo "# phase 5: under a (stub) Supervisor: discovery runs as root and announces the token"
+# A Supervisor token only reaches a container at creation, so this is a new add-on container
+# on the same volume. The stub holds its answer to GET /addons/self/info for 8 s, so the
+# discovery process is alive, holding the token, while its privileges are inspected.
+SV_TOKEN=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+stub_log() { docker logs "$SUPERVISOR" 2>&1; }
+# stub_has <exact line> <seconds>: wait for the stub to print that line (one request each).
+stub_has() {
+  local l
+  for _ in $(seq 1 $(($2 * 4))); do
+    l=$(stub_log)
+    if grep -qxF -- "$1" <<<"$l"; then return 0; fi
+    sleep 0.25
+  done
+  return 1
+}
+docker rm -f "$ADDON" >/dev/null
+put_options options-default.json
+docker run -d --name "$SUPERVISOR" --network "$NET" --ip "$SUPERVISOR_IP" --network-alias supervisor \
+  -e HOLD_MS=8000 -v "$HERE:/e2e:ro" "$NODE_IMAGE" node /e2e/supervisor-stub.mjs >/dev/null
+stub_has "supervisor stub listening on :80" 20 || die "the Supervisor stub did not start; see $OUT/supervisor-stub.log"
+docker run -d --name "$ADDON" --network "$NET" --ip "$ADDON_IP" -v "$VOL:/data" \
+  -e SUPERVISOR_TOKEN="$SV_TOKEN" "$IMAGE" >/dev/null
+wait_ready "under the Supervisor"
+check "discovery asked the Supervisor for this add-on's hostname, with Bearer <Supervisor token>" \
+  stub_has "{\"method\":\"GET\",\"url\":\"/addons/self/info\",\"auth\":\"Bearer $SV_TOKEN\",\"body\":null}" 90
+# Discovery is now waiting for the held answer.
+procs=$(in_addon sh -c "$PROCS_SH")
+printf '%s\n' "$procs" >"$OUT/processes-supervisor.txt"
+# The scanner must not carry the token itself: docker exec hands it the container's -e values.
+seen=$(docker exec -u app "$ADDON" env -u SUPERVISOR_TOKEN sh -c "$ENVIRON_SH")
+printf '%s\n' "$seen" >"$OUT/environ-scan.txt"
+readable=${seen%% *}
+check "discovery is running while it waits for the Supervisor" [ "$(count_role "$procs" discovery)" -eq 1 ]
+check "discovery runs as root (real, effective, saved, fs uid 0), not as app" \
+  [ -z "$(awk '$7 == "discovery" && !($3 == 0 && $4 == 0 && $5 == 0 && $6 == 0)' <<<"$procs")" ]
+check "every server (api, gateway, nginx) still runs as uid 1000" servers_run_as_app "$procs"
+check "as app, the environments of the other app processes are readable (got $readable)" [ "$readable" -ge 3 ]
+check "no environment app can read holds SUPERVISOR_TOKEN (holders:${seen#"$readable"})" [ "$seen" = "$readable" ]
+check "the discovery state dir is root's alone (0700 root)" \
+  [ "$(in_addon stat -c '%a %u' /run/opengym-discovery)" = "700 0" ]
+check "discovery POSTed {service opengym, host local-opengym, port 8099, the integration token}" \
+  stub_has "{\"method\":\"POST\",\"url\":\"/discovery\",\"auth\":\"Bearer $SV_TOKEN\",\"body\":{\"service\":\"opengym\",\"config\":{\"host\":\"local-opengym\",\"port\":8099,\"token\":\"$TOKEN\"}}}" 30
+check "the log says discovery announced local-opengym:8099" \
+  log_has "openGym discovery: announced local-opengym:8099 to Home Assistant"
+check "the Supervisor token never appears in the log" log_lacks "$SV_TOKEN"
+stop_cleanly "under the Supervisor"
 
 echo "# e2e: $PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]
