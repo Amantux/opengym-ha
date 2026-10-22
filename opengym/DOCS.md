@@ -110,9 +110,11 @@ any other add-on changes nothing.
 
 - **There is no token to copy.** The add-on is set up by discovery, and on Home Assistant OS you
   cannot read its token file anyway. If the integration ever says openGym rejected its token (for
-  example after you reinstalled the add-on), restart the add-on: it announces its current token
-  again and the integration reloads itself. If it is still not connected after that, restart
-  Home Assistant.
+  example after you reinstalled the add-on), restart Home Assistant: on start it reads the
+  add-on's current announcement, and the integration reloads itself with that token. Restarting
+  only the add-on usually does not help: it announces the same token as before, and Home
+  Assistant ignores a repeat. A reinstalled add-on announces its new token by itself when it
+  starts; if the error stays after that, restart the add-on once, then Home Assistant.
 - **Reinstalled openGym from a different add-on repository?** Home Assistant sees that as a
   different add-on. Delete the openGym integration (**Settings → Devices & services → openGym**),
   then add the new one when it shows up as discovered. Restart Home Assistant if it does not.
