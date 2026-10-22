@@ -7,9 +7,20 @@ Upstream pin: **openGym v1.4.1**
 - `ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b`
 - `ghcr.io/duartesantos8/opengym-web:1.4.1@sha256:e32cae9d2f4aad0c5e1b7888c9bfc712b2306ddfe3c65bc4cfefd4b0002e86d3`
 
+Both are pinned only in `opengym/Dockerfile`'s `FROM` lines (the final stage is `FROM` the api
+image directly). There is no `build.yaml` (deprecated since Supervisor 2026.04) and no
+`ARG BUILD_FROM`: an older Supervisor passes `BUILD_FROM=<HA base image>`, which goes unused.
+A Dependabot upstream bump needs one hand edit, `OPENGYM_VERSION` in the Dockerfile.
+
 ## 1. Processes, ports, users
 
 All three server processes run as **`app` (uid 1000)** via `gosu`, `HOME=/home/app`.
+`SUPERVISOR_TOKEN` is removed before `gosu` (`env -u SUPERVISOR_TOKEN gosu app …`), so no server
+ever has it in its environment. Supervisor discovery (`node /opt/gateway/src/cli.js discovery`)
+is not a server: under the Supervisor it runs as **root**, because any uid-1000 process can read
+every other uid-1000 process's `/proc/<pid>/environ`. The boot-time time-zone lookup
+(`gosu app node -e`, `GET /info`) still carries the token as `app`; that is safe only because it
+runs before any other uid-1000 process exists.
 
 | process | listens | owner of the code |
 |---|---|---|
@@ -44,6 +55,8 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 | `/app/` | upstream api (patched at build) — `queue.js` etc. importable from here |
 | `/opt/gateway/` | gateway package (`src/`, no `node_modules` needed — zero deps) |
 | `/usr/share/nginx/html/` | upstream SPA + `exercise-media/` (copied from the web image) |
+| `/usr/share/nginx/html/ha-ingress.js` | the gateway's page-side upload script (`gateway/web/`), loaded first by `index.html` (§6 step 6) |
+| `/run/opengym-discovery/` | root:root 0700, discovery's state dir: the entrypoint copies the integration token into it (reading it as `app`) once the gateway answers `/healthz`; root never opens a path under `/data` |
 | `/etc/opengym/nginx/default.conf.template` | upstream `web/nginx.conf.template` verbatim (copied from the web image) |
 
 ## 3. Environment
@@ -53,7 +66,8 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 `RP_ID=$RESOLVED_RP_ID` `RP_NAME=openGym` `FIRST_USER_ADMIN=1` `TRUST_PROXY=1`
 `PASSWORD_LOGIN` `INVITE_ONLY` `ALLOW_GUEST` (each `1`/`0` from RESOLVED_*)
 `DEFAULT_LANG` (only exported when non-empty) `HA_INTERNAL_SOCKET=/run/opengym/internal.sock`
-`NODE_ENV=production`
+`NODE_ENV=production`. Upstream's media limits are left at their defaults (videos 40 MB): big
+uploads stream through ingress (§6 step 6) instead of being capped.
 
 ### nginx template render (as root, before dropping privileges)
 `envsubst '${NGINX_PORT} ${BACKEND} ${PORT} ${RESOLVER} ${CF_CONNECTING_IP} ${BASE_PATH} ${MEDIA_UPLOAD_MAX}'`
@@ -126,12 +140,18 @@ through `createGateway({ peerOf })`; production always uses the socket.
 
 Server timeouts: `requestTimeout` 30 min (48 MB video uploads), `headersTimeout` 60 s,
 `keepAliveTimeout` 65 s (above aiohttp's 15 s reuse window — avoids stale-socket 502s through
-the Supervisor). Request and response bodies are streamed, never buffered.
+the Supervisor). Request and response bodies are streamed, never buffered. Hop-by-hop headers
+(RFC 9110 §7.6.1, plus any the `Connection` header names) are not forwarded in either direction.
+The request body's framing is kept: when the incoming request carried `Transfer-Encoding`
+(Node's parser has already refused one that also has a `Content-Length` or does not end in
+`chunked`), the request to nginx carries `Transfer-Encoding: chunked` for every method, so a
+body never reaches nginx unframed and cannot be read as a second request on the pooled
+connection.
 
 Own routes (all peers): `GET /healthz` (proxies api `/api/health` status + body), `/ha/v1/*` (§7).
 Everything else proxies to nginx. On **every** proxied request: delete all `X-Remote-User-*`
-headers before forwarding; overwrite `X-Forwarded-For`/`X-Real-IP` with the socket peer; drop
-`CF-Connecting-IP`.
+headers and `X-OpenGym-Method` before forwarding; overwrite `X-Forwarded-For`/`X-Real-IP` with
+the socket peer; drop `CF-Connecting-IP`.
 
 **Ingress peer** (every request, with or without identity):
 1. Strip every client `gymsid` / `__Host-gymsid` cookie pair and the `Authorization` header
@@ -149,6 +169,17 @@ headers before forwarding; overwrite `X-Forwarded-For`/`X-Real-IP` with the sock
    starting with `/` gets the request's `X-Ingress-Path` prefixed.
 5. When a new profile is created and is admin, log `"openGym: HA user <name> is the openGym
    admin (first profile on this instance)"`.
+6. **Uploads.** The Supervisor reads every ingress request body into memory, capped at 16 MiB
+   (`supervisor/api/__init__.py` `MAX_CLIENT_SIZE`), except a `POST` to an add-on with
+   `ingress_stream: true` (set in `config.yaml`), which it streams with no length. Upstream
+   uploads media with `PUT /api/media/<sha256>` (`frontend/src/lib/api.js` `apiUpload`, an
+   `XMLHttpRequest` looked up at call time; a CI test re-reads upstream's source to pin this).
+   `gateway/web/ha-ingress.js`, loaded before the app and active only under
+   `/api/hassio_ingress/<token>/`, sends exactly those uploads (same origin, that ingress root's
+   `api/media/<64 hex>`, no query) as `POST` with `X-OpenGym-Method: PUT`. For the ingress peer
+   only, a `POST` to `^/api/media/[0-9a-f]{64}$` with `X-OpenGym-Method: PUT` goes to nginx as
+   `PUT`; nothing else changes method. Upstream's CSRF check and its media checks (type sniff,
+   sha256, size and length caps) then run on that `PUT` as usual.
 
 **Other peers:** `RESOLVED_DIRECT_ACCESS=true` → proxy untouched (upstream sign-in and headers
 apply). Off → `403` JSON `{"error":"Direct access is turned off. Open openGym from the Home
@@ -213,11 +244,19 @@ Request `{"weight": 80.2, "unit": "kg" | "lb", "date": "YYYY-MM-DD"?, "measured_
   `400` invalid input; `404 {"error":"unknown profile"}`; `409 {"error":"the profile changed
   while saving, try again"}` after retries (or the no-data case above); `502 {"error":"openGym
   is not responding"}`.
+- Accepted side effect: the write's `GET /api/data` runs as that profile, so upstream records a
+  pull (`notePull`, saved at most every 10 minutes) and the admin dashboard shows the profile as
+  synced when HA logs a weigh-in for it. Display-only.
+- `body_weight.measured_at` in the summary is the entry's `t` (when it was last written), not a
+  measurement time; the request's `measured_at` only chooses the date when `date` is absent.
 
 ## 8. Discovery
 
-After the gateway answers `/healthz` (poll ≤ 60 s), `POST http://supervisor/discovery` with
-`Authorization: Bearer $SUPERVISOR_TOKEN`:
+With `SUPERVISOR_TOKEN` set, the entrypoint waits up to 60 s for the gateway's `/healthz`, copies
+the integration token as described in §2, then starts discovery as root with exactly `PATH`,
+`SUPERVISOR_TOKEN`, `GATEWAY_PORT=8099` and `GATEWAY_STATE_DIR=/run/opengym-discovery` (without
+`SUPERVISOR_TOKEN`, discovery runs as `app` and logs the skip). Discovery sends
+`POST http://supervisor/discovery` with `Authorization: Bearer $SUPERVISOR_TOKEN`:
 ```json
 {"service": "opengym", "config": {"host": "<GET /addons/self/info → data.hostname>", "port": 8099, "token": "<integration token>"}}
 ```
@@ -227,18 +266,42 @@ skip (never advertise the container id).
 
 ## 9. HA integration (`custom_components/opengym`)
 
-Config entry data: `{"host": str, "port": int, "token": str}`. Base URL `http://{host}:{port}`.
-Hassio flow unique id `opengym_addon`; manual flow unique id `"{host}:{port}"`.
-Polls `GET /ha/v1/summary` every 60 s. The integration always sends `date` on writes, in HA's
-time zone. Event `opengym_workout_completed`
-`{profile_id, profile_name, date, routine_name, duration_min}`. Services
-`opengym.log_body_weight`, `opengym.get_summary`.
+Config entry data: manual entries `{"host": str, "port": int, "token": str}`; add-on (hassio)
+entries also `"addon_slug": str`, the `HassioServiceInfo.slug` of the add-on whose discovery
+created the entry. Base URL `http://{host}:{port}`. Hassio flow unique id `opengym_addon`;
+manual flow unique id `"{host}:{port}"`. `hassio_confirm` placeholders are
+`{"addon": discovery_info.name, "slug": discovery_info.slug}`.
+
+- **Rediscovery is pinned to the add-on.** When an add-on entry (not ignored) exists and
+  `discovery_info.slug != entry.data["addon_slug"]` (a missing slug included), the flow aborts
+  `not_opengym_addon` (placeholders `addon`, `slug`), changes nothing and makes no request. For
+  the same slug, host/port/token change only when the discovery carries a non-empty token.
+- **Manual-entry fold:** with no add-on entry, a manual entry whose host:port matches the
+  advertised one (case-insensitive) takes a new non-empty token only after
+  `GET /ha/v1/summary` with it succeeds there; otherwise `invalid_auth` / `cannot_connect` and
+  nothing changes.
+- Whenever a discovery or the fold changes an entry's data, the integration aborts that entry's
+  reauth flows, deletes the issue `homeassistant/config_entry_reauth_opengym_<entry_id>`,
+  dismisses HA 2024.11's `config_entry_reconfigure` notification once no reauth flow remains,
+  and reloads the entry when it is `LOADED`, `SETUP_RETRY` or `SETUP_ERROR`.
+- Polls `GET /ha/v1/summary` every 60 s.
+- `opengym.log_body_weight`: `unit` is **required** (`kg` | `lb`); nothing is inferred from HA's
+  unit system. The integration always sends `date`, in HA's time zone.
+  `opengym.get_summary` (`SupportsResponse.ONLY`). Both are callable by any HA user for any
+  profile (HA does not isolate non-admin users; documented).
+- Event `opengym_workout_completed` `{profile_id, profile_name, date, routine_name,
+  duration_min}` fires when a profile's `last_workout` has a new id and is not older, by
+  `(date, ended_at)`, than the stored one. A poll whose `last_workout` is null or not an object
+  keeps the stored one. No event on the first refresh or for a profile seen for the first time.
+  With no earlier workout stored for the profile it fires only if `ended_at` is at most 24 h
+  old, or, without a usable `ended_at`, the date is today or yesterday in HA's time zone.
 
 ## 10. Versions
 
 Add-on version starts at `0.1.0`; `opengym/config.yaml` `version` ==
-`custom_components/opengym/manifest.json` `version` (CI-asserted). The Supervisor passes
-`BUILD_VERSION`; the Dockerfile exports it as `OPENGYM_HA_VERSION`.
+`custom_components/opengym/manifest.json` `version` (CI-asserted). Every Supervisor passes
+`BUILD_VERSION` and `BUILD_ARCH`; the Dockerfile exports `BUILD_VERSION` as
+`OPENGYM_HA_VERSION` and appends it to `ha-ingress.js?v=` so browsers fetch a new copy.
 
 ## 11. Decisions recorded
 
@@ -253,3 +316,6 @@ Add-on version starts at `0.1.0`; `opengym/config.yaml` `version` ==
   user on the next open; the service worker only registers on https, so no offline mode under
   ingress; openGym shares HA's origin under ingress, so an XSS in openGym could reach HA — the
   same exposure every ingress add-on has.
+- **Uploads:** streamed (§6 step 6) rather than capping openGym's own limits. A cap would have
+  applied to direct access too (it is the api's own setting). `ingress_stream` streams only
+  `POST`, hence the method tunnel; it is ingress-only and limited to the one media route.
