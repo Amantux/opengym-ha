@@ -1,0 +1,67 @@
+name: openGym
+version: "0.1.0"
+slug: opengym
+description: Self-hosted gym and body-weight tracker. Every Home Assistant user gets their own profile, already signed in.
+url: https://github.com/Amantux/opengym-ha
+# No `image:` on purpose: the Supervisor builds this add-on on your device from the official
+# openGym images (pinned by digest in build.yaml). The exercise photos and animations bundled
+# with openGym are licensed to openGym only, so they must not be re-hosted in an image we
+# publish. Building locally means nobody but openGym distributes them.
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: auto
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:dumbbell
+panel_title: openGym
+# Every household member gets the sidebar panel, not just HA admins: each one signs in to
+# their own openGym profile. Who administers openGym is decided inside openGym (the first
+# person to open it), not by Home Assistant's admin flag.
+panel_admin: false
+# Advertise to Home Assistant so the openGym integration is offered without typing anything.
+discovery:
+  - opengym
+# Needed for discovery (this add-on's own hostname, POST /discovery) and to read Home
+# Assistant's time zone. The default role is enough; nothing here manages other add-ons.
+hassio_api: true
+# INTERNAL-ONLY by default (null = not published on the host). The sidebar (ingress) and the
+# Home Assistant integration both work without a host port. Map it only for direct access
+# from outside Home Assistant, and then also set external_url.
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: openGym direct access. Map it only when your own https reverse proxy forwards to it and external_url is set; passkeys and the phone app need that. The sidebar (ingress) does not.
+# openGym writes every data file to a temporary name and renames it into place (its activity
+# log is only ever appended to), so a hot backup captures whole files while it keeps running.
+backup: hot
+# Seconds the Supervisor waits after asking openGym to stop before it kills it.
+timeout: 30
+options:
+  external_url: ""
+  password_login: false
+  invite_only: false
+  allow_guest: false
+  default_lang: ""
+schema:
+  # Leave blank unless you reach openGym directly through your own https reverse proxy, e.g.
+  # https://gym.example.com (just the address: no path, query or user name). Blank means
+  # direct access on port 8099 is refused and openGym opens from the sidebar only. Passkeys
+  # are bound to this host name: changing it later makes every passkey made for the old one
+  # stop working.
+  external_url: "str?"
+  # Offer "Sign in with password" on direct access, for profiles that set a password. Turning
+  # it off again locks out any profile whose only way in is a password. No effect inside
+  # Home Assistant, where you are signed in already.
+  password_login: bool
+  # New profiles made on direct access need an invite code from the openGym admin. Home
+  # Assistant users always get their profile, invite or not.
+  invite_only: bool
+  # Show "Continue without account" on the sign-in screen. A guest's data stays in that one
+  # browser: no sync, no backup, and Home Assistant cannot see it. Off suits a household.
+  allow_guest: bool
+  # Language the sign-in screen and every new profile start in, e.g. de or pt-BR. Blank = each
+  # browser's own language. Anyone's own choice in openGym's settings always wins.
+  default_lang: "str?"

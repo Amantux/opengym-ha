@@ -1,0 +1,9 @@
+# The build context is this folder (the Supervisor builds the add-on from it). The image
+# needs only patches/, gateway/package.json, gateway/src/ and rootfs/; keep the rest, and
+# anything a developer machine leaves behind, out of the context.
+**/node_modules
+**/coverage
+**/.DS_Store
+**/*.log
+gateway/test
+gateway/tests

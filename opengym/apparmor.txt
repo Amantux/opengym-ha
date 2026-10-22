@@ -1,0 +1,56 @@
+#include <tunables/global>
+
+# openGym add-on AppArmor profile. Not declared in config.yaml: the Supervisor finds this
+# file next to it and matches the `profile` name below.
+#
+# Runtime: the official openGym api image (node:22-alpine, busybox) plus nginx and gosu, no
+# s6-overlay (init: false). /usr/local/bin/opengym-entrypoint.sh runs as root just long
+# enough to chown /data, create /run/opengym and render nginx's config, then starts three
+# servers as the unprivileged `app` user through gosu: the openGym api (node, 127.0.0.1:3000),
+# nginx (127.0.0.1:8080, the app's static files and /api proxy) and our gateway (node, :8099,
+# ingress sign-in and the Home Assistant integration API). The gateway reaches the api over a
+# unix socket in /run/opengym and the Supervisor API over HTTP. Data lives in /data.
+#
+# Strategy: allow the app's own file I/O (broad `file` rule) and let AppArmor's default-deny
+# confine everything else: every capability, mount, module load, ptrace and raw socket NOT
+# granted below is denied. Paths can be tightened once validated under enforcement on a real
+# Home Assistant install.
+profile opengym flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Code in /app and /opt/gateway, data in /data, nginx's files, /run/opengym, /tmp, /proc.
+  file,
+
+  # The entrypoint (PID 1) forwards TERM to every server and polls them with kill -0; nginx's
+  # master signals its worker.
+  signal,
+
+  # Boot-time ownership work as root (chown -R /data, chmod), gosu's switch to `app`
+  # (setuid/setgid: without them gosu fails and the add-on dies before any log line a user
+  # would recognise), and root signalling processes that belong to `app` (kill).
+  capability setuid,
+  capability setgid,
+  capability dac_override,
+  capability chown,
+  capability fowner,
+  capability fsetid,
+  capability kill,
+
+  # Execute within THIS profile (ix = inherit) so every child stays confined by these rules:
+  # node in /usr/local/bin (with the entrypoint), nginx in /usr/sbin, gosu/envsubst/env/wget
+  # in /usr/bin, and busybox (sh, sleep, kill, ...) in /bin.
+  /usr/local/bin/** ix,
+  /usr/sbin/** ix,
+  /usr/bin/** ix,
+  /bin/** ix,
+
+  # TCP: the three servers, the Supervisor API, and the AI Coach's HTTPS providers. UDP and
+  # netlink: DNS resolution (the resolver enumerates interfaces over netlink, and without it
+  # name lookups fail silently). unix stream: the api's internal socket.
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+  network netlink raw,
+  network unix stream,
+}

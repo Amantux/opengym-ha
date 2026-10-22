@@ -1,0 +1,31 @@
+configuration:
+  external_url:
+    name: External URL (direct access)
+    description: >-
+      Leave blank to use openGym only from the Home Assistant sidebar; direct
+      access is then refused. Set it to the https address your own reverse
+      proxy serves openGym at (for example https://gym.example.com) to allow
+      passkeys, password sign-in and the phone app, and map port 8099.
+      Changing it later breaks every passkey made for the old address.
+  password_login:
+    name: Password sign-in
+    description: >-
+      Offer "Sign in with password" on direct access for profiles that set a
+      password. Switching it off again locks out profiles whose only way in is
+      a password. Inside Home Assistant you are signed in already.
+  invite_only:
+    name: Invite-only sign-up
+    description: >-
+      New profiles made on direct access need an invite code from the openGym
+      admin. Home Assistant users always get their own profile.
+  allow_guest:
+    name: Allow guest mode
+    description: >-
+      Show "Continue without account". A guest's data stays in that one
+      browser, with no sync or backup, and Home Assistant cannot see it.
+  default_lang:
+    name: Default language
+    description: >-
+      Language code (for example de or pt-BR) that the sign-in screen and new
+      profiles start in. Blank = each browser's own language. A person's own
+      choice in openGym always wins.
