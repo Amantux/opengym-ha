@@ -10,6 +10,7 @@
 # failed.
 #
 # shellcheck disable=SC2016 # all() evaluates its single-quoted conditions after each run
+# shellcheck disable=SC2317,SC2329 # the helpers below are called from those conditions, through eval
 set -u
 INSTALLER=$(cd "$(dirname "$0")/../.." && pwd)/opengym/rootfs/usr/local/bin/opengym-install-integration.sh
 if [ ! -f "$INSTALLER" ]; then echo "not ok - installer not found at $INSTALLER"; exit 1; fi

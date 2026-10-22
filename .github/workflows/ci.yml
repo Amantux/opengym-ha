@@ -148,8 +148,13 @@ jobs:
       - name: Shellcheck (entrypoint, integration installer, their tests)
         # PID 1 of the add-on: signal forwarding and privilege drop live here. The
         # installer writes into Home Assistant's configuration folder as root.
+        # Pinned (v0.11.0) rather than the runner's own shellcheck, whose version
+        # moves with the runner image and disagreed with local runs (SC2317/SC2329).
+        # Locally: the same docker run.
         run: |
-          shellcheck opengym/rootfs/usr/local/bin/opengym-entrypoint.sh \
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt \
+            koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d \
+            opengym/rootfs/usr/local/bin/opengym-entrypoint.sh \
             opengym/rootfs/usr/local/bin/opengym-install-integration.sh \
             tests/installer/test-installer.sh tests/e2e/run.sh
       - name: Integration installer tests (busybox)
