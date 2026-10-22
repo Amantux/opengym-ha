@@ -84,30 +84,53 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Trivy
+        # Pinned three ways, because Trivy's own release channels were hijacked in
+        # March 2026 (GHSA-69fq-xp46-6x23: a malicious v0.69.4 and "latest"):
+        # install.sh from the commit tagged v0.76.1, told to install exactly
+        # v0.76.1 (an immutable GitHub release; the script checks the tarball
+        # against that release's checksums file), and the installed binary checked
+        # against the sha256 recorded here (the `trivy` file inside
+        # trivy_0.76.1_Linux-64bit.tar.gz, whose own sha256 c7cbe313...39d9c0 is the
+        # release's). To bump, change all three together.
+        env:
+          TRIVY_INSTALL_SH: https://raw.githubusercontent.com/aquasecurity/trivy/e713f67f7d54decdcd9b3132c9751833dcced698/contrib/install.sh
+          TRIVY_VERSION: v0.76.1
+          TRIVY_SHA256: d1dfca6ae10a1ad4540bb94e64f0510077c47008920a9b554986b39dca573d83
         run: |
           # Retry the download: this is a third-party CDN, and a transient 302 or
           # 5xx here means "the tool could not run", which is not a security
           # finding and must not fail the job. The SBOM job went red exactly
           # this way in a sibling repo.
           for attempt in 1 2 3; do
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-              | sh -s -- -b /usr/local/bin && exit 0
+            if curl -sfL -o "$RUNNER_TEMP/trivy-install.sh" "$TRIVY_INSTALL_SH" \
+              && sh "$RUNNER_TEMP/trivy-install.sh" -b /usr/local/bin "$TRIVY_VERSION"; then
+              break
+            fi
             echo "trivy install attempt $attempt failed; retrying in $((attempt * 10))s"
             sleep $((attempt * 10))
           done
-          echo "::warning::could not install Trivy after 3 attempts — skipping the scan"
-          exit 0
+          if [ ! -x /usr/local/bin/trivy ]; then
+            echo "::warning::could not install Trivy after 3 attempts — skipping the scan"
+            exit 0
+          fi
+          # A mismatch is not an outage: something served other bytes than the
+          # pinned release. Never run that binary, and say so loudly.
+          if ! echo "$TRIVY_SHA256  /usr/local/bin/trivy" | sha256sum -c --quiet; then
+            rm -f /usr/local/bin/trivy
+            echo "::error::the installed trivy does not match TRIVY_SHA256; refusing to run it"
+            exit 1
+          fi
       - name: Scan repo (vulns, misconfig, secrets) → SARIF
         run: |
           # If the install gave up, skip rather than fail on a missing binary:
           # otherwise the retry above just moves the red one step to the right.
-          if ! command -v trivy >/dev/null; then
+          if [ ! -x /usr/local/bin/trivy ]; then
             echo "::warning::Trivy is not installed — scan skipped"
             exit 0
           fi
           # Advisory (--exit-code 0): findings land in the Security tab. Accepted
           # findings, each with its reason, are in .trivyignore (read by default).
-          trivy fs --scanners vuln,misconfig,secret \
+          /usr/local/bin/trivy fs --scanners vuln,misconfig,secret \
             --format sarif --output trivy.sarif \
             --severity HIGH,CRITICAL --exit-code 0 .
       - name: Upload SARIF
@@ -127,6 +150,10 @@ jobs:
           fetch-depth: 0   # the whole history, not just the tip commit
           persist-credentials: false
       - name: Install & run gitleaks
+        env:
+          # sha256 of gitleaks_8.21.2_linux_x64.tar.gz, as listed in that release's
+          # gitleaks_8.21.2_checksums.txt (checked 2026-10-22). Bump it with the URL.
+          GITLEAKS_SHA256: 5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba
         run: |
           # Retry the download only. A transient CDN failure is not a secret
           # leak; the scan itself still fails the job when it finds one.
@@ -139,6 +166,11 @@ jobs:
           if [ ! -s gitleaks.tar.gz ]; then
             echo "::warning::could not download gitleaks — scan skipped"
             exit 0
+          fi
+          # A mismatch is not an outage: never run a binary that is not the pinned one.
+          if ! echo "$GITLEAKS_SHA256  gitleaks.tar.gz" | sha256sum -c --quiet; then
+            echo "::error::gitleaks.tar.gz does not match GITLEAKS_SHA256; refusing to run it"
+            exit 1
           fi
           tar -xzf gitleaks.tar.gz gitleaks
           # Blocking on purpose: a committed credential is a defect in THIS diff
