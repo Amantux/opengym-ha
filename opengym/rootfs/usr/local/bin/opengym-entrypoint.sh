@@ -174,6 +174,16 @@ else
 fi
 checkpoint "after reading the options"
 
+# The /homeassistant fence is AppArmor's (apparmor.txt). The folder is mounted whenever the
+# add-on is installed, so without the add-on's own profile in enforce mode the servers' uid could
+# read Home Assistant's world-readable configuration files. Say so in the log rather than stay
+# quiet. (The Supervisor names the profile after the add-on's slug, which ends in "opengym".)
+aa_profile=$(cat /proc/self/attr/current 2>/dev/null || true)
+case "$aa_profile" in
+  *opengym*' (enforce)') ;;
+  *) log "WARNING: AppArmor is not enforcing this add-on's profile (${aa_profile:-none}), so openGym's processes are not fenced off from Home Assistant's configuration folder. Home Assistant OS enforces it; on another install, enable AppArmor." ;;
+esac
+
 # ---------------------------------------------------------------------------------------
 # install_integration: copy the integration bundled in this image into Home Assistant's
 # custom_components, never over a copy that HACS or a person put there (see the script). It

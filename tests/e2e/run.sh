@@ -408,6 +408,12 @@ check "the log says discovery was skipped (no SUPERVISOR_TOKEN)" \
 check "the log says direct access is off" \
   log_has "openGym: direct access is off: openGym opens from the Home Assistant sidebar only."
 check "the integration token never appears in the log" log_lacks "$TOKEN"
+if [ "$APPARMOR" = 1 ]; then
+  check "confined by the add-on's profile: no AppArmor warning in the log" log_lacks "WARNING: AppArmor is not enforcing"
+else
+  check "not confined by the add-on's profile: the log warns that the fence is off" \
+    text_contains "$(addon_log)" "^openGym: WARNING: AppArmor is not enforcing this add-on's profile "
+fi
 
 procs=$(in_addon sh -c "$PROCS_SH")
 printf '%s\n' "$procs" >"$OUT/processes.txt"

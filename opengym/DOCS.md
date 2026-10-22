@@ -120,7 +120,8 @@ installed, with `install_integration` on or off: the folder cannot be mounted on
 option is on. AppArmor confines openGym's web processes (openGym itself, the add-on's gateway and
 its web server) away from that folder, so only the add-on's start-up step can touch it, and only
 to copy the integration in. This protection depends on AppArmor, which Home Assistant OS and
-supported installations enforce.
+supported installations enforce; if it is not in force, the add-on's log says so at every start
+(`WARNING: AppArmor is not enforcing this add-on's profile`).
 
 ## The Home Assistant integration
 
