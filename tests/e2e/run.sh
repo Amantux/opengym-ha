@@ -569,7 +569,9 @@ check "the log says the integration was installed, and to restart Home Assistant
 copy_diff=$(in_addon diff -r /opt/opengym/integration/opengym /homeassistant/custom_components/opengym 2>&1 || true)
 check "custom_components/opengym is the image's bundled integration, file for file, plus the marker" \
   [ "$copy_diff" = "Only in /homeassistant/custom_components/opengym: .installed-by-opengym-addon" ]
-check "the marker names this add-on version ($VERSION)" [ "$(ha_sh "cat $MARK")" = "$VERSION" ]
+check "the marker names this add-on version ($VERSION)" [ "$(ha_sh "head -n 1 $MARK")" = "$VERSION" ]
+check "the marker pins the installed manifest.json's sha256" \
+  [ "$(ha_sh "sed -n 2p $MARK")" = "$(ha_sh "sha256sum /ha/custom_components/opengym/manifest.json | cut -d' ' -f1")" ]
 check "nothing else was left in custom_components (no temp dirs)" [ "$(ha_sh 'ls -A /ha/custom_components')" = opengym ]
 check "secrets.yaml is unchanged" [ "$(ha_sh 'cat /ha/secrets.yaml')" = "$HA_SECRET" ]
 client_phase restart
