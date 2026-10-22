@@ -313,7 +313,8 @@ stop_cleanly() {
 }
 # pid, comm, the four Uid fields and the role of every process in the add-on. The role comes
 # from the EXACT command line (a substring match would find the scanning shell's own script),
-# nginx's from its comm (it rewrites its command line): api, gateway, discovery, nginx, other.
+# nginx's from its comm (it rewrites its command line): api, gateway, discovery, tz (the boot-time
+# time-zone lookup), nginx, other.
 PROCS_SH=$(cat <<'EOF'
 for d in /proc/[0-9]*; do
   c=$(cat "$d/comm" 2>/dev/null) || continue
@@ -323,6 +324,7 @@ for d in /proc/[0-9]*; do
     'node server.js ') r=api ;;
     'node /opt/gateway/src/server.js ') r=gateway ;;
     'node /opt/gateway/src/cli.js discovery ') r=discovery ;;
+    'node -e '*'http://supervisor/info'*) r=tz ;;
     *) if [ "$c" = nginx ]; then r=nginx; else r=other; fi ;;
   esac
   [ -n "$u" ] && echo "${d#/proc/} $c $u $r"
@@ -471,7 +473,8 @@ check "the entrypoint handled it (stop requested during startup / stopping.)" \
 echo "# phase 5: under a (stub) Supervisor: discovery runs as root and announces the token"
 # A Supervisor token only reaches a container at creation, so this is a new add-on container
 # on the same volume. The stub holds its answer to GET /addons/self/info for 8 s, so the
-# discovery process is alive, holding the token, while its privileges are inspected.
+# discovery process is alive, holding the token, while its privileges are inspected; and its
+# answer to GET /info for 2 s, the same for the boot-time time-zone lookup.
 SV_TOKEN=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 stub_log() { docker logs "$SUPERVISOR" 2>&1; }
 # stub_has <exact line> <seconds>: wait for the stub to print that line (one request each).
@@ -487,11 +490,25 @@ stub_has() {
 docker rm -f "$ADDON" >/dev/null
 put_options options-default.json
 docker run -d --name "$SUPERVISOR" --network "$NET" --ip "$SUPERVISOR_IP" --network-alias supervisor \
-  -e HOLD_MS=8000 -v "$HERE:/e2e:ro" "$NODE_IMAGE" node /e2e/supervisor-stub.mjs >/dev/null
+  -e HOLD_MS=8000 -e INFO_HOLD_MS=2000 -v "$HERE:/e2e:ro" "$NODE_IMAGE" node /e2e/supervisor-stub.mjs >/dev/null
 stub_has "supervisor stub listening on :80" 20 || die "the Supervisor stub did not start; see $OUT/supervisor-stub.log"
 docker run -d --name "$ADDON" --network "$NET" --ip "$ADDON_IP" -v "$VOL:/data" \
   -v "$HAVOL:/homeassistant" "${SEC[@]}" -e SUPERVISOR_TOKEN="$SV_TOKEN" "$IMAGE" >/dev/null
+check "the boot-time time-zone lookup asked the Supervisor (GET /info, Bearer <Supervisor token>)" \
+  stub_has "{\"method\":\"GET\",\"url\":\"/info\",\"auth\":\"Bearer $SV_TOKEN\",\"body\":null}" 30
+# The lookup is now waiting for the held answer: it carries the token, so it must be root, and
+# no environment uid 1000 can read may hold it (the scanner is explained below).
+procs=$(in_addon sh -c "$PROCS_SH")
+seen=$(docker exec -u app "$ADDON" env -u SUPERVISOR_TOKEN node -e \
+  'process.stdout.write(require("child_process").execFileSync("/bin/sh", ["-c", process.argv[1]]))' "$ENVIRON_SH")
+check "the time-zone lookup is running while it waits for the Supervisor" [ "$(count_role "$procs" tz)" -eq 1 ]
+check "the time-zone lookup runs as root (real, effective, saved, fs uid 0), not as app" \
+  [ -z "$(awk '$7 == "tz" && !($3 == 0 && $4 == 0 && $5 == 0 && $6 == 0)' <<<"$procs")" ]
+check "during the lookup no environment app can read holds SUPERVISOR_TOKEN (holders:${seen#"${seen%% *}"})" \
+  [ "$seen" = "${seen%% *}" ]
 wait_ready "under the Supervisor"
+check "the log says the time zone came from Home Assistant (Europe/Lisbon)" \
+  log_has "openGym: time zone Europe/Lisbon (from Home Assistant)."
 check "discovery asked the Supervisor for this add-on's hostname, with Bearer <Supervisor token>" \
   stub_has "{\"method\":\"GET\",\"url\":\"/addons/self/info\",\"auth\":\"Bearer $SV_TOKEN\",\"body\":null}" 90
 # Discovery is now waiting for the held answer.

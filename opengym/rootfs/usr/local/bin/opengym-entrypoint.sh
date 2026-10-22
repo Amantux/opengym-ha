@@ -193,13 +193,17 @@ checkpoint "after the integration installer"
 # already in the environment wins; otherwise Home Assistant's zone is asked from the
 # Supervisor (GET /info -> data.timezone, 3 s timeout). The name is checked against the
 # time-zone database before it reaches the environment; the response body is never logged.
+# Like discovery it runs as ROOT, with an empty environment plus PATH and the token: as app,
+# SUPERVISOR_TOKEN would sit in a /proc/<pid>/environ every uid-1000 process can read. None
+# exists yet at this point, but that must not be what keeps the token safe. It reads nothing
+# under the app-owned /data. (Under AppArmor node still runs in opengym//app, with HTTP.)
 # ---------------------------------------------------------------------------------------
 if [ -n "${TZ:-}" ]; then
   log "time zone $TZ (from the environment)."
 elif [ -z "${SUPERVISOR_TOKEN:-}" ]; then
   log "time zone: not running under the Supervisor; using UTC."
 else
-  zone=$(gosu app node -e '
+  zone=$(env -i PATH="$PATH" SUPERVISOR_TOKEN="$SUPERVISOR_TOKEN" node -e '
 fetch("http://supervisor/info", {
   headers: { Authorization: "Bearer " + process.env.SUPERVISOR_TOKEN },
   signal: AbortSignal.timeout(3000),

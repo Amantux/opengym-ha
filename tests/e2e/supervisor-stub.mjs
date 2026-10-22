@@ -3,15 +3,18 @@
 // calls, and answers the three calls the add-on makes: GET /info (Home Assistant's time zone),
 // GET /addons/self/info (the hostname discovery announces) and POST /discovery.
 //
-//   HOLD_MS=8000 node supervisor-stub.mjs
+//   HOLD_MS=8000 INFO_HOLD_MS=2000 node supervisor-stub.mjs
 //
 // Every request is printed as one JSON line {method, url, auth, body} the moment it has arrived
 // (body parsed when it is JSON), so run.sh asserts on exactly what the add-on sent. The answer to
 // GET /addons/self/info is held for HOLD_MS (below discovery's 10 s timeout), so the discovery
 // process is alive, holding the Supervisor token, while run.sh inspects the add-on's processes.
+// INFO_HOLD_MS does the same for GET /info (below the time-zone lookup's 3 s timeout), so the
+// boot-time lookup can be inspected too.
 import http from 'node:http';
 
 const HOLD_MS = Number(process.env.HOLD_MS) || 0;
+const INFO_HOLD_MS = Number(process.env.INFO_HOLD_MS) || 0;
 
 function reply(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -27,7 +30,7 @@ http.createServer((req, res) => {
     try { body = raw ? JSON.parse(raw) : null; } catch { /* not JSON: keep the text */ }
     console.log(JSON.stringify({ method: req.method, url: req.url, auth: req.headers.authorization ?? null, body }));
     if (req.method === 'GET' && req.url === '/info') {
-      reply(res, 200, { result: 'ok', data: { timezone: 'Europe/Lisbon' } });
+      setTimeout(() => reply(res, 200, { result: 'ok', data: { timezone: 'Europe/Lisbon' } }), INFO_HOLD_MS);
     } else if (req.method === 'GET' && req.url === '/addons/self/info') {
       setTimeout(() => reply(res, 200, { result: 'ok', data: { hostname: 'local-opengym' } }), HOLD_MS);
     } else if (req.method === 'POST' && req.url === '/discovery') {
