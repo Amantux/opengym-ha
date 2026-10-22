@@ -9,8 +9,10 @@ because in myMeal a commit body that merely mentioned "[minor]" once turned a mi
 into 1.0.0.
 
 Writes, in one go: opengym/config.yaml, custom_components/opengym/manifest.json (they must stay
-equal, docs/contract.md §10) and opengym/CHANGELOG.md (the add-on's Changelog tab must name the
-version it offers). In CI it also appends old_version/new_version to $GITHUB_OUTPUT.
+equal, docs/contract.md §10), the add-on's bundled copy of that manifest
+(opengym/integration/opengym/manifest.json, which tools/addon_lint.py requires to be identical)
+and opengym/CHANGELOG.md (the add-on's Changelog tab must name the version it offers). In CI it
+also appends old_version/new_version to $GITHUB_OUTPUT.
 Standard library only: the job runs on the runner's own python3.
 """
 
@@ -25,6 +27,7 @@ from pathlib import Path
 
 CONFIG = "opengym/config.yaml"
 MANIFEST = "custom_components/opengym/manifest.json"
+BUNDLED_MANIFEST = "opengym/integration/opengym/manifest.json"
 CHANGELOG = "opengym/CHANGELOG.md"
 
 # The top-level `version:` key only (no indentation), quoted or not. Only the value is
@@ -84,6 +87,9 @@ def bump(root: Path, message: str) -> tuple[str, str]:
     m = VERSION_LINE.search(config)
     if not m:
         raise SystemExit(f"{CONFIG}: no top-level 'version: X.Y.Z' line to bump")
+    bundled_path = root / BUNDLED_MANIFEST
+    if not bundled_path.is_file():  # checked before anything is written
+        raise SystemExit(f"{BUNDLED_MANIFEST}: missing; run tools/sync_integration.py first")
     old_parts = tuple(int(x) for x in m.groups()[1:])
     old = ".".join(map(str, old_parts))
     new = ".".join(map(str, next_version(old_parts, message)))
@@ -94,8 +100,10 @@ def bump(root: Path, message: str) -> tuple[str, str]:
     manifest_path = root / MANIFEST
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["version"] = new  # key order is preserved; hassfest checks it
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-                             encoding="utf-8")
+    manifest_text = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    manifest_path.write_text(manifest_text, encoding="utf-8")
+    # The add-on's copy gets the same bytes, so the two stay identical (tools/sync_integration.py).
+    bundled_path.write_text(manifest_text, encoding="utf-8")
 
     changelog_path = root / CHANGELOG
     changelog = changelog_path.read_text(encoding="utf-8")

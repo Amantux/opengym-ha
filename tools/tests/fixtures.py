@@ -12,6 +12,8 @@ from pathlib import Path
 
 from PIL import Image
 
+import sync_integration
+
 API = ("ghcr.io/duartesantos8/opengym-api:1.4.1"
        "@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b")
 WEB = ("ghcr.io/duartesantos8/opengym-web:1.4.1"
@@ -139,4 +141,6 @@ def make_valid_tree(root: Path) -> Path:
     write(root, "README.md", README)
     for rel, size in BRANDS.items():
         write_png(root, rel, size)
+    # The add-on's bundled copy of the integration (install_integration), as the tool writes it.
+    sync_integration.sync(root)
     return root

@@ -85,7 +85,7 @@ class Bump(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_writes_all_three_files_in_lockstep(self):
+    def test_writes_all_four_files_in_lockstep(self):
         config = self.root / "opengym/config.yaml"
         config.write_text(config.read_text().replace('version: "0.1.0"',
                                                      'version: 0.1.0  # set by CI'))
@@ -101,6 +101,9 @@ class Bump(unittest.TestCase):
         self.assertEqual(manifest["version"], "0.2.0")
         self.assertEqual(list(manifest), list(fixtures.MANIFEST), "key order must survive")
         self.assertTrue(manifest_text.endswith("}\n"))
+        # The add-on's bundled copy (install_integration) moves with it, byte for byte.
+        bundled = self.root / "opengym/integration/opengym/manifest.json"
+        self.assertEqual(bundled.read_text(), manifest_text)
 
         self.assertIn("## 0.2.0\n\n- Weekly summary.\n",
                       (self.root / "opengym/CHANGELOG.md").read_text())
@@ -114,6 +117,15 @@ class Bump(unittest.TestCase):
             self.assertEqual(bump_version.main(["--root", str(self.root)]), 0)
         self.assertEqual(output.read_text(), "old_version=0.1.0\nnew_version=0.1.1\n")
         self.assertIn("Bumped 0.1.0 -> 0.1.1", out.getvalue())
+
+    def test_refuses_without_the_bundled_manifest_and_writes_nothing(self):
+        (self.root / "opengym/integration/opengym/manifest.json").unlink()
+        before = {rel: (self.root / rel).read_bytes() for rel in (
+            "opengym/config.yaml", "custom_components/opengym/manifest.json", "opengym/CHANGELOG.md")}
+        with self.assertRaises(SystemExit):
+            bump_version.bump(self.root, "fix: x")
+        for rel, data in before.items():
+            self.assertEqual((self.root / rel).read_bytes(), data, rel)
 
     def test_refuses_a_config_without_a_version(self):
         config = self.root / "opengym/config.yaml"

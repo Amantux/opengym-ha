@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,9 +24,15 @@ sys.path.insert(0, str(HERE.parent))
 
 import addon_lint  # noqa: E402
 import fixtures  # noqa: E402
+import sync_integration  # noqa: E402
 
 
 class LintCase(unittest.TestCase):
+    # A case that changes the integration assumes its bundled copy was synced again, as a
+    # developer must, so the one problem reported is the one under test. The bundle's own cases
+    # turn this off.
+    resync_bundle = True
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = fixtures.make_valid_tree(Path(self._tmp.name))
@@ -50,6 +57,8 @@ class LintCase(unittest.TestCase):
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     def assert_only(self, where: str, *needles: str) -> addon_lint.Problem:
+        if self.resync_bundle:
+            sync_integration.sync(self.root)
         problems = addon_lint.lint(self.root)
         self.assertEqual(len(problems), 1, f"expected exactly one problem, got {problems}")
         (problem,) = problems
@@ -218,6 +227,48 @@ class IntegrationMetadata(LintCase):
     def test_readme_buttons_must_point_at_this_repo(self):
         self.edit("README.md", "owner=Amantux&repository=opengym-ha", "owner=Amantux&repository=mymeal")
         self.assert_only("README.md", "HACS button")
+
+
+class BundledIntegration(LintCase):
+    """opengym/integration/opengym: the copy install_integration puts into Home Assistant."""
+
+    BUNDLE = "opengym/integration/opengym"
+    resync_bundle = False
+
+    def test_missing_bundle(self):
+        shutil.rmtree(self.root / self.BUNDLE)
+        problem = self.assert_only(self.BUNDLE, "is missing", "tools/sync_integration.py")
+        self.assertIn("built from opengym/ only", problem.fix)
+
+    def test_changed_file(self):
+        self.edit(f"{self.BUNDLE}/manifest.json", '"version": "0.1.0"', '"version": "0.0.9"')
+        self.assert_only(self.BUNDLE, "manifest.json differs", "tools/sync_integration.py")
+
+    def test_byte_for_byte(self):
+        # Same text to a reader, different bytes: still a different file.
+        path = self.root / self.BUNDLE / "manifest.json"
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        self.assert_only(self.BUNDLE, "manifest.json differs")
+
+    def test_file_added_to_the_integration_only(self):
+        fixtures.write(self.root, "custom_components/opengym/sensor.py", "SENSORS = []\n")
+        self.assert_only(self.BUNDLE, "sensor.py is missing from the copy")
+
+    def test_file_left_in_the_copy(self):
+        fixtures.write(self.root, f"{self.BUNDLE}/old_platform.py", "x = 1\n")
+        self.assert_only(self.BUNDLE, "old_platform.py is in the copy only")
+
+    def test_tests_and_byte_code_are_not_part_of_it(self):
+        fixtures.write(self.root, "custom_components/opengym/tests/test_x.py", "def test(): pass\n")
+        fixtures.write(self.root, "custom_components/opengym/__pycache__/const.cpython-312.pyc", "x")
+        fixtures.write(self.root, f"{self.BUNDLE}/__pycache__/const.cpython-314.pyc", "y")
+        self.assertEqual(addon_lint.lint(self.root), [])
+
+    def test_many_differences_are_summarised(self):
+        for n in range(7):
+            fixtures.write(self.root, f"{self.BUNDLE}/stale_{n}.py", "")
+        problem = self.assert_only(self.BUNDLE, "stale_0.py is in the copy only", "and 2 more")
+        self.assertNotIn("stale_6.py", problem.what)
 
 
 class BrandAndDocs(LintCase):

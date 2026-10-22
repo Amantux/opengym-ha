@@ -1,0 +1,43 @@
+# Names and descriptions live in strings.json ("services"), as Home Assistant
+# expects for translated integrations.
+log_body_weight:
+  fields:
+    profile:
+      required: true
+      example: Alex
+      selector:
+        text:
+    weight:
+      required: true
+      example: 80.2
+      selector:
+        number:
+          min: 0.1
+          step: any
+          mode: box
+    unit:
+      required: true
+      example: kg
+      selector:
+        select:
+          options:
+            - kg
+            - lb
+    date:
+      selector:
+        date:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: opengym
+
+get_summary:
+  fields:
+    profile:
+      example: Alex
+      selector:
+        text:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: opengym

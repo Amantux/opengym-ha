@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import quote
 
+import sync_integration  # standard library only, like --upstream-version
+
 ADDON = "opengym"  # add-on directory and slug
 DOMAIN = "opengym"  # integration domain
 INGRESS_PORT = 8099  # docs/contract.md §1: the gateway listens here
@@ -36,6 +38,8 @@ DOCKERFILE = f"{ADDON}/Dockerfile"
 LEGACY_BUILD_FILES = tuple(f"{ADDON}/build.{ext}" for ext in ("yaml", "yml", "json"))
 TRANSLATIONS = f"{ADDON}/translations/en.yaml"
 MANIFEST = f"custom_components/{DOMAIN}/manifest.json"
+# The copy of the integration inside the add-on's build context (install_integration).
+BUNDLE = sync_integration.BUNDLE
 
 # Home Assistant is strict about these, and the add-on store shows a placeholder instead of
 # failing when one is missing or the wrong shape.
@@ -350,6 +354,21 @@ def check_manifest(manifest: dict, problems: list[Problem]) -> None:
         ))
 
 
+def check_bundle(root: Path, problems: list[Problem]) -> None:
+    # The Supervisor builds the add-on from opengym/ alone, so install_integration installs this
+    # copy, never custom_components/opengym itself: a stale copy ships an old integration.
+    fix = (f"run python3 tools/sync_integration.py and commit {BUNDLE}; the add-on is built "
+           f"from {ADDON}/ only, so install_integration copies this bundled integration into "
+           "Home Assistant, and it must be exactly what HACS installs")
+    if not (root / BUNDLE).is_dir():
+        problems.append(Problem(BUNDLE, "is missing", fix))
+        return
+    lines = sync_integration.differences(root)
+    if lines:
+        shown = "; ".join(lines[:5]) + (f"; and {len(lines) - 5} more" if len(lines) > 5 else "")
+        problems.append(Problem(BUNDLE, f"differs from {sync_integration.SOURCE}: {shown}", fix))
+
+
 def check_brand_assets(root: Path, problems: list[Problem]) -> None:
     from PIL import Image, UnidentifiedImageError  # imported here, see the module doc
 
@@ -478,6 +497,7 @@ def lint(root: Path) -> list[Problem]:
         base = check_repository(root, manifest, problems)
         if base:
             check_readme(root, base, problems)
+    check_bundle(root, problems)
     check_brand_assets(root, problems)
     check_hacs(root, problems)
     # Several checks read the same file; report a missing one once.
