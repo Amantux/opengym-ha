@@ -1,0 +1,113 @@
+--- a/server.js
++++ b/server.js
+@@ -550,8 +550,10 @@
+ // signing out the whole instance. Cookies minted before `sv` existed have no third field and are
+ // read as version 0, matching a user who has never bumped — they stay valid until they expire.
+ const sessionVersion = user => user.sv || 0;
+-function makeSession(user) {
+-  const exp = Date.now() + SESSION_DAYS * 86400000;
++// `ttlMs` is only ever passed by the Home Assistant add-on's internal listener (end of this file),
++// whose gateway is handed a one-minute session per request. Everyone else gets SESSION_DAYS.
++function makeSession(user, ttlMs = SESSION_DAYS * 86400000) {
++  const exp = Date.now() + ttlMs;
+   return sign(user.id + ':' + exp + ':' + sessionVersion(user));
+ }
+ // With the __Host- prefix the *browser* guarantees the cookie is host-only (no Domain attribute
+@@ -2702,8 +2704,95 @@
+ // every other route's body still has to arrive within five minutes (bodyDeadline above).
+ server.requestTimeout = 30 * 60000;
+ server.headersTimeout = 60000;
++
++/* ---------- Home Assistant add-on: internal listener ---------- */
++// Not upstream openGym: the opengym-ha add-on carries this as a patch, and nothing here exists
++// unless HA_INTERNAL_SOCKET is set. Home Assistant has already signed its users in when it shows
++// openGym in its sidebar, and a passkey cannot be made inside HA's iframe, so the add-on's gateway
++// asks here for the profile of each HA user and hands the browser a session for it.
++//
++// A second server on a unix socket, not routes on the one above. nginx sits on loopback and
++// forwards every /api/* target to that server, so "the caller is 127.0.0.1" holds for every
++// browser request and would protect nothing. This socket is reachable only by whoever can open
++// the file: the api's own user (0600, in a directory the add-on's entrypoint makes 0700).
++//
++// The sessions are upstream's own (makeSession), so signing out everywhere, disabling and deleting
++// a profile end them the way they end any other. They last a minute: the gateway asks again for
++// every request, and a session that outlived the HA sign-in behind it would only be a liability.
++//
++// No socket peer address exists here (req.socket.remoteAddress is undefined), which is fine for
++// the helpers reused below: readBody never reads it, and audit() then records no address (a header
++// the gateway sets would still be used, as it is behind any proxy).
++const HA_SOCKET = process.env.HA_INTERNAL_SOCKET || '';
++const HA_USER_ID = /^[A-Za-z0-9_-]{1,128}$/;
++const HA_SESSION_MS = 60000;
++const internalUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u), disabled: !!u.disabled });
++const internalRoutes = {
++  // Find-or-create the profile of one HA user. Invites are not asked for: HA's owner already chose
++  // who has an HA account. The name is used only when the profile is made (a rename in openGym
++  // wins after that) and is not checked for uniqueness: names only have to be unique among
++  // profiles with a password, and a profile made here has no credential to set one with.
++  'POST /internal/ha-session': async (req, res) => {
++    const body = await readBody(req);
++    const ha = body.ha_user_id;
++    // Also what stops a missing id from matching the first profile that has no `ha` at all.
++    if (typeof ha !== 'string' || !HA_USER_ID.test(ha)) return json(res, 400, { error: 'invalid ha_user_id' });
++    // No await from here to saveDb(): an HA user's first page load sends several requests at once,
++    // and every one of them has to find the single profile the first of them made.
++    let user = db.users.find(u => u.ha === ha);
++    const created = !user;
++    if (!user) {
++      const name = text(body.name).trim().slice(0, 40) || 'Home Assistant user';
++      user = { id: crypto.randomBytes(12).toString('base64url'), name, created: new Date().toISOString(), ha };
++      claimFirstAdmin(req, user);
++      db.users.push(user);
++      saveDb();
++      audit(req, 'auth.register.ok', { user, msg: 'ha-ingress' });
++    }
++    // A disabled profile stays disabled and gets no session: an admin's lock is not the gateway's
++    // to lift.
++    json(res, 200, { user: internalUser(user), created, token: user.disabled ? null : makeSession(user, HA_SESSION_MS) });
++  },
++  // A session for a profile that already exists, for the add-on's integration API to write as it.
++  'POST /internal/session': async (req, res) => {
++    const body = await readBody(req);
++    const user = typeof body.uid === 'string' ? db.users.find(u => u.id === body.uid) : null;
++    if (!user || user.disabled) return json(res, 404, { error: 'unknown profile' });
++    json(res, 200, { token: makeSession(user, HA_SESSION_MS) });
++  },
++  // From memory rather than db.json, so a sign-out, disable or delete counts the moment it happens.
++  'GET /internal/users': async (req, res) => {
++    json(res, 200, { users: db.users.map(u => ({ ...internalUser(u), ha: u.ha || null })) });
++  }
++};
++if (HA_SOCKET) {
++  const internal = http.createServer(async (req, res) => {
++    const key = req.method + ' ' + req.url.split('?')[0];
++    const handler = internalRoutes[key];
++    if (!handler) return json(res, 404, { error: 'not found' });
++    // The same answers as the public server's catch-all: a body the caller got wrong gets its
++    // status and message, anything else is logged and is a bare 500.
++    try { await handler(req, res); }
++    catch (e) {
++      if (e?.clientGone) return;
++      if (e instanceof HttpError) { if (!res.headersSent) json(res, e.status, { error: e.message }); return; }
++      console.error(key, e);
++      if (!res.headersSent) json(res, 500, { error: 'server error' });
++    }
++  });
++  // A killed process leaves its socket file behind, and listen() refuses a path that exists. Only
++  // a socket is removed: anything else at that path is a mistake to stop on, not a file to delete.
++  try { if (fs.lstatSync(HA_SOCKET).isSocket()) fs.unlinkSync(HA_SOCKET); }
++  catch (e) { if (e.code !== 'ENOENT') throw e; }
++  // Bound before the public server below, so by the time that one is up (its boot line,
++  // /api/health) this socket is listening and 0600. Until the chmod the umask decides; the usual
++  // 022 already lets no other user connect, since connecting takes write permission.
++  internal.listen(HA_SOCKET, () => fs.chmodSync(HA_SOCKET, 0o600));
++}
++
+ // The port is read back off the listener rather than echoed from PORT, so the line states the
+ // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose it
+ // (the tests spawn the server that way, and so does anyone running two instances on one box) has
+-// no other way to learn it.
+-server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
++// no other way to learn it. HOST narrows the bind to one address (the add-on puts the api on
++// 127.0.0.1, behind its gateway); unset, it is every interface, as it always was.
++server.listen(PORT, process.env.HOST || undefined, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
