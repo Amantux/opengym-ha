@@ -1,0 +1,9 @@
+# Test-only deps for the openGym integration: the `latest` leg of the
+# integration-tests CI matrix (Python 3.14; harness 0.13.371 pins
+# homeassistant==2026.10.0 and requires >=3.14). Pinned exactly so a new HA
+# arrives as a Dependabot PR rather than silently on the next CI run. The
+# `minimum` leg (oldest supported HA) uses requirements_test_min.txt.
+#
+# Venv only (the repo's .venv-ha), never a system interpreter: the harness pins
+# its own dependency set and will happily downgrade whatever else lives there.
+pytest-homeassistant-custom-component==0.13.371

@@ -1,0 +1,138 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to openGym",
+        "description": "If you run the openGym add-on, Home Assistant finds it on its own — accept the discovered entry instead. Otherwise enter where the openGym gateway listens and its integration token (stored on the openGym host in `/data/gateway/integration_token`).",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "token": "Integration token"
+        },
+        "data_description": {
+          "host": "A hostname or IP address only, without http:// or a path.",
+          "port": "The gateway port; the add-on uses 8099."
+        }
+      },
+      "hassio_confirm": {
+        "title": "openGym add-on found",
+        "description": "Set up the **{addon}** add-on? Each openGym profile becomes a device with body weight, last workout and today's routine sensors.\n\nIf you already added openGym by hand using an IP address, remove that entry first so it is not set up twice."
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate openGym",
+        "description": "openGym at {host} rejected the stored integration token. If you run the openGym add-on, restart it: it advertises its token again and Home Assistant picks it up. Otherwise enter the token from `/data/gateway/integration_token` on the openGym host.",
+        "data": {
+          "token": "Integration token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach openGym. Check the host and port, and that openGym is running.",
+      "invalid_auth": "openGym rejected the integration token. Check that you copied the whole token.",
+      "invalid_host": "Enter a hostname or IP address only, without http:// or a path."
+    },
+    "abort": {
+      "already_configured": "This openGym is already set up.",
+      "already_in_progress": "Setup for this openGym is already in progress.",
+      "cannot_connect": "Could not reach the openGym add-on. Start it, then try again from Settings → Devices & services.",
+      "invalid_auth": "The openGym add-on rejected its own token. Restart the add-on, then try again.",
+      "reauth_successful": "openGym is connected again."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "body_weight": {
+        "name": "Body weight"
+      },
+      "last_workout": {
+        "name": "Last workout"
+      },
+      "workouts_this_week": {
+        "name": "Workouts this week"
+      },
+      "workouts_7d": {
+        "name": "Workouts last 7 days"
+      },
+      "today_routine": {
+        "name": "Today's routine"
+      }
+    }
+  },
+  "exceptions": {
+    "entry_not_found": {
+      "message": "No openGym entry with id {entry_id}. Pick the openGym instance again."
+    },
+    "entry_not_loaded": {
+      "message": "openGym is not loaded. Check Settings → Devices & services, then try again."
+    },
+    "entry_required": {
+      "message": "More than one openGym is set up. Choose which one with config_entry_id."
+    },
+    "unknown_profile": {
+      "message": "No openGym profile matches \"{profile}\". Use the id or the exact name of one of: {candidates}."
+    },
+    "ambiguous_profile": {
+      "message": "More than one openGym profile is called \"{profile}\": {candidates}. Use the id of the one you mean."
+    },
+    "invalid_weigh_in": {
+      "message": "openGym refused this weigh-in. Use a weight between 0 and 700 kg (1543 lb) and a valid date."
+    },
+    "profile_not_found": {
+      "message": "openGym no longer has the profile \"{profile}\". It may have been deleted or disabled; check the profile list in openGym."
+    },
+    "profile_conflict": {
+      "message": "openGym could not save the weigh-in for \"{profile}\": the profile changed while saving, or it has no data yet. Try again; if it keeps failing, log something in openGym as that person first (a workout, a weigh-in or any setting)."
+    },
+    "invalid_auth": {
+      "message": "openGym rejected the integration token. Re-authenticate the openGym integration."
+    },
+    "request_failed": {
+      "message": "openGym refused the request (HTTP {status}). Try again; if it keeps failing, check the openGym add-on log."
+    },
+    "not_responding": {
+      "message": "openGym is not responding. Check that the openGym add-on is running, then try again."
+    }
+  },
+  "services": {
+    "log_body_weight": {
+      "name": "Log body weight",
+      "description": "Records a weigh-in on an openGym profile, for example from a smart scale. A profile keeps one weigh-in per day, so a second one on the same day replaces the first.",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "The profile's id, or its exact name (not case-sensitive)."
+        },
+        "weight": {
+          "name": "Weight",
+          "description": "The measured weight. openGym converts it to the profile's own unit."
+        },
+        "unit": {
+          "name": "Unit",
+          "description": "Unit of the weight. Defaults to lb with a US customary unit system, otherwise kg."
+        },
+        "date": {
+          "name": "Date",
+          "description": "Day of the weigh-in. Defaults to today in Home Assistant's time zone."
+        },
+        "config_entry_id": {
+          "name": "openGym instance",
+          "description": "Only needed when more than one openGym is set up."
+        }
+      }
+    },
+    "get_summary": {
+      "name": "Get summary",
+      "description": "Returns each profile's body weight, last workout, workout counts and today's routine, as of the last poll (every minute).",
+      "fields": {
+        "profile": {
+          "name": "Profile",
+          "description": "Only return this profile (id or exact name). Leave empty for all profiles."
+        },
+        "config_entry_id": {
+          "name": "openGym instance",
+          "description": "Only needed when more than one openGym is set up."
+        }
+      }
+    }
+  }
+}
