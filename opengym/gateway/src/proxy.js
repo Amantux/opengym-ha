@@ -26,6 +26,13 @@ export function proxyRequest(req, res, { target, headers, rewriteResponseHeaders
   // The client can be gone already (it hung up while the gateway was minting its session); its
   // close events have fired, so an upstream request started now would never be cancelled.
   if (req.socket?.destroyed) return;
+  // A chunked request body stays chunked. Transfer-Encoding is hop-by-hop and dropped above, and
+  // node chunk-encodes an unframed body by default only for POST/PUT/PATCH: a GET, HEAD, DELETE
+  // or OPTIONS body would go to nginx with no framing at all and be read as the next request on
+  // the pooled connection (smuggled past forwardHeaders). Naming the coding makes node frame it
+  // for every method. node's parser has already refused a request whose last coding is not
+  // chunked, and one with a Content-Length as well.
+  if (req.headers['transfer-encoding'] !== undefined) headers = { ...headers, 'transfer-encoding': 'chunked' };
   const upstream = http.request({
     protocol: target.protocol,
     hostname: target.hostname,

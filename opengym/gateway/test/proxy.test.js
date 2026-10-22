@@ -4,6 +4,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
+import net from 'node:net';
 import { once } from 'node:events';
 import { INGRESS_PEER } from '../src/gateway.js';
 import { json, request, sha256, startFakeNginx, startGateway } from './helpers/servers.js';
@@ -131,4 +132,89 @@ test('nginx dying mid-response cuts the client off instead of passing a short bo
     res.on('close', () => resolve(res.complete ? 'end' : 'cut'));
   });
   assert.notEqual(await within(ended, 5_000, 'client side closed'), 'end', 'the client must see an incomplete response');
+});
+
+// A chunked body starting at buf[from]: { data, end } once its last chunk is in, else null.
+function dechunk(buf, from) {
+  let data = '';
+  for (let at = from; ;) {
+    const eol = buf.indexOf('\r\n', at);
+    if (eol === -1) return null;
+    const size = parseInt(buf.slice(at, eol), 16);
+    if (size === 0) return buf.length >= eol + 4 ? { data, end: eol + 4 } : null;
+    if (buf.length < eol + 2 + size + 2) return null;
+    data += buf.slice(eol + 2, eol + 2 + size);
+    at = eol + 4 + size;
+  }
+}
+
+// Raw TCP "nginx": records every byte per connection and splits it into messages the way a real
+// HTTP/1.1 parser would for these requests (no Content-Length is ever sent: a head ends the
+// message unless it says chunked, then the body runs to the last chunk). Answers each one.
+async function startRawNginx() {
+  const conns = [];
+  const sockets = new Set();
+  const server = net.createServer(sock => {
+    sockets.add(sock);
+    const conn = { raw: '', messages: [] };
+    conns.push(conn);
+    let buf = '';
+    sock.on('data', d => {
+      conn.raw += d.toString('latin1');
+      buf += d.toString('latin1');
+      for (;;) {
+        const headEnd = buf.indexOf('\r\n\r\n');
+        if (headEnd === -1) return;
+        const head = buf.slice(0, headEnd);
+        let body = { data: '', end: headEnd + 4 };
+        if (/\r\ntransfer-encoding: *chunked\r?$/im.test(head)) {
+          body = dechunk(buf, headEnd + 4);
+          if (!body) return;
+        }
+        conn.messages.push({ head, body: body.data });
+        buf = buf.slice(body.end);
+        sock.write('HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n');
+      }
+    });
+    sock.on('error', () => {});
+  });
+  const { port } = await new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address())));
+  return { conns, url: `http://127.0.0.1:${port}`, close: () => new Promise(r => { for (const c of sockets) c.destroy(); server.close(() => r()); }) };
+}
+
+/** Write `bytes` on a fresh TCP connection and collect everything until the server closes it. */
+function rawExchange(port, bytes) {
+  return new Promise((resolve, reject) => {
+    const s = net.connect(port, '127.0.0.1', () => s.write(bytes, 'latin1'));
+    let out = '';
+    s.on('data', d => { out += d.toString('latin1'); });
+    s.on('close', () => resolve(out));
+    s.on('error', reject);
+  });
+}
+
+test('a chunked body stays chunked to nginx for every method, so nothing rides behind it as a second request', async () => {
+  // node chunk-encodes POST/PUT/PATCH bodies on its own; for these it would send the body bytes
+  // with no framing at all, and nginx would read them as the next request on the connection.
+  const smuggled = 'GET /SMUGGLED HTTP/1.1\r\nHost: x\r\nX-Remote-User-Id: admin\r\nX-Forwarded-For: 172.30.32.2\r\n\r\n';
+  const chunked = `${smuggled.length.toString(16)}\r\n${smuggled}\r\n0\r\n\r\n`;
+  const methods = ['GET', 'HEAD', 'DELETE', 'OPTIONS', 'POST'];
+  for (const [peer, directAccess] of [['192.168.1.9', true], [INGRESS_PEER, false]]) {
+    const web = await startRawNginx();
+    cleanups.push(web.close);
+    const gw = track(await startGateway({ peer, config: { webUrl: web.url, directAccess } }));
+    for (const method of methods) {
+      const out = await within(rawExchange(gw.port, `${method} /api/x HTTP/1.1\r\nHost: gw\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n${chunked}`), 5_000, `${method} answered`);
+      assert.match(out, /^HTTP\/1\.1 200 /, `${method} via ${peer}`);
+    }
+    // One keep-alive connection carried all of them, each exactly one framed message.
+    assert.equal(web.conns.length, 1, `one upstream connection via ${peer}`);
+    const { messages, raw } = web.conns[0];
+    assert.deepEqual(messages.map(m => m.head.split('\r\n')[0]), methods.map(m => `${m} /api/x HTTP/1.1`), `request lines nginx parsed via ${peer}`);
+    assert.doesNotMatch(raw, /(^|\r\n\r\n)GET \/SMUGGLED/, 'the body never starts a request of its own');
+    for (const m of messages) {
+      assert.match(m.head, /\r\ntransfer-encoding: chunked(\r\n|$)/i, m.head.split('\r\n')[0]);
+      assert.equal(m.body, smuggled, `${m.head.split('\r\n')[0]} carries the whole body, as data`);
+    }
+  }
 });
