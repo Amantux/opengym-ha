@@ -86,8 +86,8 @@ jobs:
       # failure says what to do: config.yaml (no image:, ingress, panel_admin,
       # options == schema, translations), the api image as the final FROM (no
       # build.yaml, no ARG BUILD_FROM), api/web/OPENGYM_VERSION on one upstream
-      # release, version lockstep,
-      # manifest key order, brand sizes + RGBA, DOCS/CHANGELOG, repository.yaml
-      # and README buttons, hacs.json keys.
+      # release, version lockstep, the bundled integration identical to
+      # custom_components/opengym, manifest key order, brand sizes + RGBA,
+      # DOCS/CHANGELOG, repository.yaml and README buttons, hacs.json keys.
       - name: Add-on lint
         run: .venv/bin/python tools/addon_lint.py

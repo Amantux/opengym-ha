@@ -18,9 +18,17 @@ All three server processes run as **`app` (uid 1000)** via `gosu`, `HOME=/home/a
 `SUPERVISOR_TOKEN` is removed before `gosu` (`env -u SUPERVISOR_TOKEN gosu app …`), so no server
 ever has it in its environment. Supervisor discovery (`node /opt/gateway/src/cli.js discovery`)
 is not a server: under the Supervisor it runs as **root**, because any uid-1000 process can read
-every other uid-1000 process's `/proc/<pid>/environ`. The boot-time time-zone lookup
-(`gosu app node -e`, `GET /info`) still carries the token as `app`; that is safe only because it
-runs before any other uid-1000 process exists.
+every other uid-1000 process's `/proc/<pid>/environ`. The boot-time time-zone lookup (`GET /info`) also runs as root, with `env -i` and only `PATH` and
+`SUPERVISOR_TOKEN`.
+
+**AppArmor.** The entrypoint and its busybox/gosu helpers run in profile `opengym` (the
+Supervisor renames it to the add-on's slug). Every node and nginx process — the api, the
+gateway, nginx, the CLI (discovery and the time-zone lookup included) — runs in the child
+`<profile>//app`, which has no capabilities and denies `/homeassistant/` and `/homeassistant/**`
+(`rwklmx`). The child is indented because the Supervisor requires exactly one column-0 `profile`
+line and rewrites only that one. The fence exists only while AppArmor enforces the profile; the
+entrypoint logs `WARNING: AppArmor is not enforcing this add-on's profile (…)` at every start
+when `/proc/self/attr/current` is not `*opengym* (enforce)`.
 
 | process | listens | owner of the code |
 |---|---|---|
@@ -56,6 +64,9 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 | `/opt/gateway/` | gateway package (`src/`, no `node_modules` needed — zero deps) |
 | `/usr/share/nginx/html/` | upstream SPA + `exercise-media/` (copied from the web image) |
 | `/usr/share/nginx/html/ha-ingress.js` | the gateway's page-side upload script (`gateway/web/`), loaded first by `index.html` (§6 step 6) |
+| `/opt/opengym/integration/opengym/` | root-owned copy of `custom_components/opengym` minus `tests/` and byte-code; kept identical by `tools/sync_integration.py`, enforced by `tools/addon_lint.py` |
+| `/homeassistant/` | HA's configuration folder: `config.yaml` `map: [{type: homeassistant_config, read_only: false, path: /homeassistant}]`. Mounted whenever the add-on is installed; reachable only from the `opengym` parent profile (the installer), never from `//app` |
+| `/homeassistant/custom_components/opengym/.installed-by-opengym-addon` | the installer's marker: the version it installed |
 | `/run/opengym-discovery/` | root:root 0700, discovery's state dir: the entrypoint copies the integration token into it (reading it as `app`) once the gateway answers `/healthz`; root never opens a path under `/data` |
 | `/etc/opengym/nginx/default.conf.template` | upstream `web/nginx.conf.template` verbatim (copied from the web image) |
 
@@ -95,6 +106,16 @@ Precedence: non-empty option in `options.json` → declared default. `""` means 
 | `invite_only` | `bool` | `false` | `RESOLVED_INVITE_ONLY=1/0` |
 | `allow_guest` | `bool` | `false` | `RESOLVED_ALLOW_GUEST=1/0` |
 | `default_lang` | `str?` | `""` | `RESOLVED_DEFAULT_LANG` (tag shape `^[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})?$`) |
+| `install_integration` | `bool` | `false` | `RESOLVED_INSTALL_INTEGRATION=true/false` (printed last by `resolve`; a non-boolean is a problem) |
+
+**Installer** (`/usr/local/bin/opengym-install-integration.sh`, run by the entrypoint only when
+`RESOLVED_INSTALL_INTEGRATION=true`): root, busybox only, after the options are read and before
+any server starts. Copies the bundled integration to `/homeassistant/custom_components/opengym`
+only when that is absent or carries the marker with another version; never touches a copy
+without the marker (HACS, by hand); refuses a symlinked `custom_components`, `opengym` or marker;
+swaps by two renames through `.opengym-addon-new` / `.opengym-addon-old`; one log line per
+outcome; always exits 0. Off: nothing touches `/homeassistant`, and turning it off removes
+nothing.
 
 `external_url` validation (at use — this function is the only reader): must parse as a URL,
 protocol `http:` or `https:`, no userinfo, path `""` or `"/"`, no query, no fragment.
@@ -307,7 +328,9 @@ manual flow unique id `"{host}:{port}"`. `hassio_confirm` placeholders are
 ## 10. Versions
 
 Add-on version starts at `0.1.0`; `opengym/config.yaml` `version` ==
-`custom_components/opengym/manifest.json` `version` (CI-asserted). Every Supervisor passes
+`custom_components/opengym/manifest.json` `version` == the bundled
+`opengym/integration/opengym/manifest.json` `version` (CI-asserted; the auto-bump writes all of
+them and the changelog). Every Supervisor passes
 `BUILD_VERSION` and `BUILD_ARCH`; the Dockerfile exports `BUILD_VERSION` as
 `OPENGYM_HA_VERSION` and appends it to `ha-ingress.js?v=` so browsers fetch a new copy.
 
@@ -324,6 +347,10 @@ Add-on version starts at `0.1.0`; `opengym/config.yaml` `version` ==
   user on the next open; the service worker only registers on https, so no offline mode under
   ingress; openGym shares HA's origin under ingress, so an XSS in openGym could reach HA — the
   same exposure every ingress add-on has.
+- **Installing the integration:** HACS is the normal path. `install_integration` (off by default)
+  is the alternative the owner chose, with an AppArmor fence: the config-folder mount cannot be
+  made conditional on the option, so the servers are confined away from it instead, and the
+  protection exists only while AppArmor enforces the profile (documented, and logged when not).
 - **Uploads:** streamed (§6 step 6) rather than capping openGym's own limits. A cap would have
   applied to direct access too (it is the api's own setting). `ingress_stream` streams only
   `POST`, hence the method tunnel; it is ingress-only and limited to the one media route.
