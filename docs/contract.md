@@ -1,0 +1,253 @@
+# opengym-ha — interface contract
+
+The single source of truth every component is built against. If code and this file disagree,
+this file wins until it is deliberately changed (and every consumer updated in the same commit).
+
+Upstream pin: **openGym v1.4.1**
+- `ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b`
+- `ghcr.io/duartesantos8/opengym-web:1.4.1@sha256:e32cae9d2f4aad0c5e1b7888c9bfc712b2306ddfe3c65bc4cfefd4b0002e86d3`
+
+## 1. Processes, ports, users
+
+All three server processes run as **`app` (uid 1000)** via `gosu`, `HOME=/home/app`.
+
+| process | listens | owner of the code |
+|---|---|---|
+| gateway (`node /opt/gateway/src/server.js`) | `0.0.0.0:8099` — ingress port **and** the integration's direct port | ours |
+| nginx | `127.0.0.1:8080` | upstream template, our main `nginx.conf` |
+| api (`node /app/server.js`) | `127.0.0.1:3000` (`HOST` added by our patch) | upstream + patch |
+
+Request path: client → gateway → nginx → api. The gateway talks **directly** to the api
+(`http://127.0.0.1:3000`) only for `/api/health` and `GET/PUT /api/data` on behalf of the
+integration, and to the api's **internal unix socket** (§5) for users and sessions.
+
+**Why a unix socket and not a loopback-only route:** nginx is itself on loopback and forwards
+every `/api/*` target, so "is the peer 127.0.0.1?" is true for every ingress and LAN request.
+The internal listener is a separate `http.Server` on `HA_INTERNAL_SOCKET`
+(`/run/opengym/internal.sock`, dir 0700, socket 0600, owned by `app`) that nginx has no route
+to. The public TCP server gains **no** routes from our patch.
+
+The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket peer and drops
+`CF-Connecting-IP` on every proxied request. nginx's main config sets
+`set_real_ip_from 127.0.0.1; real_ip_header X-Forwarded-For;` so the upstream template's
+`proxy_set_header X-Forwarded-For $remote_addr` forwards the real peer, and the api runs with
+`TRUST_PROXY=1`.
+
+## 2. Paths
+
+| path | what |
+|---|---|
+| `/data/options.json` | Supervisor-written add-on options (read **only** by `gateway/src/options.js`) |
+| `/data/opengym/` | upstream `DATA_DIR`: `db.json`, `secret`, `state-<uid>.json`, `vapid.json`, `audit.log`, `uploads/` |
+| `/data/gateway/integration_token` | integration token, mode 0600, created once by the gateway at startup, never logged |
+| `/run/opengym/internal.sock` | api internal listener (§5); `/run/opengym` created 0700 `app:app` by the entrypoint |
+| `/app/` | upstream api (patched at build) — `queue.js` etc. importable from here |
+| `/opt/gateway/` | gateway package (`src/`, no `node_modules` needed — zero deps) |
+| `/usr/share/nginx/html/` | upstream SPA + `exercise-media/` (copied from the web image) |
+| `/etc/opengym/nginx/default.conf.template` | upstream `web/nginx.conf.template` verbatim (copied from the web image) |
+
+## 3. Environment
+
+### api (set by the entrypoint)
+`DATA_DIR=/data/opengym` `HOST=127.0.0.1` `PORT=3000` `ORIGIN=$RESOLVED_ORIGIN`
+`RP_ID=$RESOLVED_RP_ID` `RP_NAME=openGym` `FIRST_USER_ADMIN=1` `TRUST_PROXY=1`
+`PASSWORD_LOGIN` `INVITE_ONLY` `ALLOW_GUEST` (each `1`/`0` from RESOLVED_*)
+`DEFAULT_LANG` (only exported when non-empty) `HA_INTERNAL_SOCKET=/run/opengym/internal.sock`
+`NODE_ENV=production`
+
+### nginx template render (as root, before dropping privileges)
+`envsubst '${NGINX_PORT} ${BACKEND} ${PORT} ${RESOLVER} ${CF_CONNECTING_IP} ${BASE_PATH} ${MEDIA_UPLOAD_MAX}'`
+with `NGINX_PORT=127.0.0.1:8080 BACKEND=127.0.0.1 PORT=3000 RESOLVER=127.0.0.11 CF_CONNECTING_IP= BASE_PATH= MEDIA_UPLOAD_MAX=48m`.
+
+### gateway
+`GATEWAY_PORT=8099` `OPENGYM_DATA_DIR=/data/opengym` `GATEWAY_STATE_DIR=/data/gateway`
+`OPENGYM_OPTIONS_FILE=/data/options.json` `UPSTREAM_API_URL=http://127.0.0.1:3000`
+`UPSTREAM_WEB_URL=http://127.0.0.1:8080` `UPSTREAM_API_DIR=/app`
+`HA_INTERNAL_SOCKET=/run/opengym/internal.sock` `OPENGYM_HA_VERSION=<add-on version>`
+`OPENGYM_VERSION=1.4.1`
+
+The gateway never reads `db.json` or `secret`: users and sessions come from upstream's own
+in-memory state over the internal socket, so `sv` bumps ("sign out everywhere"), disables and
+deletes are always current. It only reads `state-<uid>.json` (read-only) for the summary.
+
+## 4. Options → resolved settings (`gateway/src/options.js`)
+
+Precedence: non-empty option in `options.json` → declared default. `""` means unset.
+
+| option | schema | default | resolves to |
+|---|---|---|---|
+| `external_url` | `str?` | `""` | `RESOLVED_ORIGIN` (`url.origin`), `RESOLVED_RP_ID` (`url.hostname`), `RESOLVED_DIRECT_ACCESS=true`. Empty → `http://localhost:8099`, `localhost`, `false` |
+| `password_login` | `bool` | `false` | `RESOLVED_PASSWORD_LOGIN=1/0` |
+| `invite_only` | `bool` | `false` | `RESOLVED_INVITE_ONLY=1/0` |
+| `allow_guest` | `bool` | `false` | `RESOLVED_ALLOW_GUEST=1/0` |
+| `default_lang` | `str?` | `""` | `RESOLVED_DEFAULT_LANG` (tag shape `^[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})?$`) |
+
+`external_url` validation (at use — this function is the only reader): must parse as a URL,
+protocol `http:` or `https:`, no userinfo, path `""` or `"/"`, no query, no fragment.
+All problems are collected and reported together.
+
+CLI (`node /opt/gateway/src/cli.js <cmd>`):
+- `resolve` → prints `RESOLVED_<NAME>=<value>` lines (no secrets, values shell-safe: the
+  adapter refuses any value outside `[A-Za-z0-9._:/@-]`), exit 0; on invalid options prints every
+  problem to stderr, exit 1.
+- `discovery` → Supervisor discovery (§8). Always exits 0; logs why when skipped.
+
+## 5. Internal listener (our patch to upstream `api/server.js`)
+
+Started only when `HA_INTERNAL_SOCKET` is set: unlink a stale socket file, `listen(path)`,
+`chmod 0600`. Separate route table; nothing here is reachable over TCP. JSON in/out, upstream's
+`readBody`/`json` helpers. Also: `server.listen(PORT, process.env.HOST || undefined)`.
+
+### `POST /internal/ha-session` `{"ha_user_id": string, "name": string}`
+- `ha_user_id` must match `^[A-Za-z0-9_-]{1,128}$` else `400`. `name` trimmed, sliced to 40
+  chars; empty → `"Home Assistant user"`. Name is only used at creation (a user's own rename in
+  openGym wins). No uniqueness check: names only have to be unique among password profiles, and
+  an HA-only profile cannot acquire a password without an existing credential.
+- Find `user.ha === ha_user_id`; not found → create `{id: randomBytes(12).base64url, name,
+  created: ISO, ha}`, `claimFirstAdmin`, push, `saveDb()`, `audit(req, 'auth.register.ok',
+  {user, msg: 'ha-ingress'})`. **No `await` between find and `saveDb`** (two concurrent calls
+  must yield one profile). Invites not consulted. Disabled users are never re-enabled.
+- `200 {"user": {"id","name","admin","disabled"}, "created": bool, "token": string|null}` —
+  `token` is upstream's own signed session payload `uid:exp:sv` with `exp = now + 60 s`
+  (`null` when disabled).
+
+### `POST /internal/session` `{"uid": string}`
+For integration writes. `200 {"token": string}` (60 s) for an existing, non-disabled user;
+`404 {"error":"unknown profile"}` otherwise.
+
+### `GET /internal/users`
+`200 {"users": [{"id","name","admin","disabled","ha": string|null}]}` from memory.
+
+## 6. Gateway behaviour
+
+`INGRESS_PEER = "172.30.32.2"` — a constant, **no env override**. Peer =
+`req.socket.remoteAddress` with a leading `::ffff:` removed. Unit tests inject the peer function
+through `createGateway({ peerOf })`; production always uses the socket.
+
+Server timeouts: `requestTimeout` 30 min (48 MB video uploads), `headersTimeout` 60 s,
+`keepAliveTimeout` 65 s (above aiohttp's 15 s reuse window — avoids stale-socket 502s through
+the Supervisor). Request and response bodies are streamed, never buffered.
+
+Own routes (all peers): `GET /healthz` (proxies api `/api/health` status + body), `/ha/v1/*` (§7).
+Everything else proxies to nginx. On **every** proxied request: delete all `X-Remote-User-*`
+headers before forwarding; overwrite `X-Forwarded-For`/`X-Real-IP` with the socket peer; drop
+`CF-Connecting-IP`.
+
+**Ingress peer** (every request, with or without identity):
+1. Strip every client `gymsid` / `__Host-gymsid` cookie pair and the `Authorization` header
+   (cookies ignore ports — a direct-port sign-in on the same hostname would otherwise ride along).
+2. If `X-Remote-User-Id` is present **and** the path starts with `/api/`: `POST
+   /internal/ha-session` (at most one in flight per HA id; nothing cached). Name =
+   `X-Remote-User-Display-Name` || `X-Remote-User-Name`, re-decoded latin1→utf8 (Node reads
+   header bytes as latin1). Token non-null → append `gymsid=<token>` to `Cookie`. Disabled →
+   anonymous. Static assets get no session.
+3. Never inject a Bearer (upstream skips CSRF for Bearer). For non-GET/HEAD/OPTIONS without a
+   `Sec-Fetch-Site` header: if the `Origin` host equals `X-Forwarded-Host`, delete `Origin` (old
+   WebKit / companion apps). A `Sec-Fetch-Site` that is present is never touched.
+4. Response: `X-Frame-Options` → `SAMEORIGIN`; a CSP of `frame-ancestors 'none'` →
+   `frame-ancestors 'self'`; drop `Set-Cookie` for `gymsid` / `__Host-gymsid`; a `Location`
+   starting with `/` gets the request's `X-Ingress-Path` prefixed.
+5. When a new profile is created and is admin, log `"openGym: HA user <name> is the openGym
+   admin (first profile on this instance)"`.
+
+**Other peers:** `RESOLVED_DIRECT_ACCESS=true` → proxy untouched (upstream sign-in and headers
+apply). Off → `403` JSON `{"error":"Direct access is turned off. Open openGym from the Home
+Assistant sidebar, or set the add-on's external_url option."}`.
+
+## 7. Integration API (`/ha/v1`)
+
+Auth: `Authorization: Bearer <integration token>` compared in constant time; missing/wrong →
+`401 {"error":"unauthorized"}`. Errors are curated strings — never an upstream body or `str(exc)`.
+
+### `GET /ha/v1/health` (no auth)
+`200 {"ok": true, "version": "<add-on version>", "opengym_version": "1.4.1"}`
+
+### `GET /ha/v1/profiles`
+`200 {"profiles": [{"id": "…", "name": "Alex", "admin": true}]}` — every user in `db.json`
+that is not disabled.
+
+### `GET /ha/v1/summary`
+```json
+{
+  "generated_at": "2026-10-22T10:00:00.000Z",
+  "profiles": [{
+    "id": "…", "name": "Alex", "admin": true, "unit": "kg",
+    "body_weight": {"value": 80.2, "unit": "kg", "date": "2026-10-21", "measured_at": "2026-10-21T05:30:00.000Z"},
+    "last_workout": {"id": "…", "date": "2026-10-21", "started_at": "…", "ended_at": "…",
+                     "routine_name": "Push A", "duration_min": 52},
+    "workouts_this_week": 3,
+    "workouts_7d": 4,
+    "today": {"date": "2026-10-22", "routine_id": "…", "routine_name": "Pull B", "rest_day": false},
+    "rev": 42
+  }]
+}
+```
+- Users from `GET /internal/users` (non-disabled); documents read **from disk**
+  (`state-<uid>.json`, read-only, mtime-cached) — never `GET /api/data`, which would record a
+  sync and make the admin dashboard show every profile "synced" by HA. A user with no state
+  file: `unit "kg"`, nulls, zero counts, `today.rest_day true`, `rev 0`.
+- Dates are the profile's local dates (`workouts[].d` is already local). "Today"/"this week" use
+  the profile's `reminder.tz` when present, else the container `TZ`, else UTC. Week start follows
+  upstream's own setting if the profile has one, else Monday.
+- `today` = upstream `effectiveRoutineId(S, date)` imported from `${UPSTREAM_API_DIR}/queue.js`.
+- `body_weight` = the entry with the latest `d` (tie → latest `t`); `value` in the profile unit.
+- Any field the gateway cannot derive is `null`, never invented.
+
+### `POST /ha/v1/profiles/{id}/bodyweight`
+Request `{"weight": 80.2, "unit": "kg" | "lb", "date": "YYYY-MM-DD"?, "measured_at": ISO?}`
+- `weight` finite, `> 0`, `≤ 700` kg-equivalent; `date` defaults to today in the profile tz.
+- Converted to the profile unit with upstream's body-weight rule (0.1 rounding,
+  `LB_PER_KG = 2.2046226218`).
+- Token from `POST /internal/session`; `GET /api/data` → update that `d` in place (or insert),
+  keep the list sorted by `d` → `PUT /api/data` with `baseRev` + `baseWid` (`state._wid`), no
+  `stamped` flag (bodyweight is app-merged, not server-stamped). `409` → re-apply onto the
+  state in the 409 body (its `_wid`), up to 3 attempts.
+- Entry `{d, w, t}`: `w` a Number in `S.unit || "kg"` rounded to 0.1;
+  `t = max(Date.now(), old.t + 1, |S.deleted?.bodyweight?.[d]| + 1, S.resetAt + 1)` — `t` is
+  the only thing merges and removals compare, so it must win.
+- `state` null (profile never synced) → `409 {"error":"This profile has no data yet. Open
+  openGym once, then try again."}` — never PUT a skeleton document.
+- `200 {"profile_id": "…", "entry": {"date": "…", "value": 80.2, "unit": "kg"}, "rev": 43}`;
+  `400` invalid input; `404 {"error":"unknown profile"}`; `409 {"error":"the profile changed
+  while saving, try again"}` after retries (or the no-data case above); `502 {"error":"openGym
+  is not responding"}`.
+
+## 8. Discovery
+
+After the gateway answers `/healthz` (poll ≤ 60 s), `POST http://supervisor/discovery` with
+`Authorization: Bearer $SUPERVISOR_TOKEN`:
+```json
+{"service": "opengym", "config": {"host": "<GET /addons/self/info → data.hostname>", "port": 8099, "token": "<integration token>"}}
+```
+Retries: 6 attempts, exponential backoff (~2 min total). No `SUPERVISOR_TOKEN` → log
+"not running under the Supervisor, discovery skipped", exit 0. Hostname lookup failure → log and
+skip (never advertise the container id).
+
+## 9. HA integration (`custom_components/opengym`)
+
+Config entry data: `{"host": str, "port": int, "token": str}`. Base URL `http://{host}:{port}`.
+Hassio flow unique id `opengym_addon`; manual flow unique id `"{host}:{port}"`.
+Polls `GET /ha/v1/summary` every 60 s. The integration always sends `date` on writes, in HA's
+time zone. Event `opengym_workout_completed`
+`{profile_id, profile_name, date, routine_name, duration_min}`. Services
+`opengym.log_body_weight`, `opengym.get_summary`.
+
+## 10. Versions
+
+Add-on version starts at `0.1.0`; `opengym/config.yaml` `version` ==
+`custom_components/opengym/manifest.json` `version` (CI-asserted). The Supervisor passes
+`BUILD_VERSION`; the Dockerfile exports it as `OPENGYM_HA_VERSION`.
+
+## 11. Decisions recorded
+
+- **Admin:** `panel_admin: false` (every household member gets the panel). `FIRST_USER_ADMIN=1`:
+  the first HA user to open openGym becomes its admin — documented ("open it yourself first")
+  and logged. Admin "Delete" re-creates an empty profile on that user's next visit; DOCS says
+  to use Disable.
+- **Coach:** HTTPS providers (Anthropic/OpenAI/Gemini/OpenAI-compatible) work; CLI-spawning
+  providers refuse to run unless the api is root (`api/coach/adapters/spawn.js`) — documented,
+  the api is not run as root to get around it.
+- **Ingress caveats (DOCS):** "Sign out" clears this device and you are signed back in as your HA
+  user on the next open; the service worker only registers on https, so no offline mode under
+  ingress; openGym shares HA's origin under ingress, so an XSS in openGym could reach HA — the
+  same exposure every ingress add-on has.

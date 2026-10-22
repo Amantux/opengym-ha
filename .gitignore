@@ -1,0 +1,15 @@
+# Python / HA test harness (dedicated venv — never system pip)
+.venv/
+.venv-ha/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+
+# Local runs / e2e artefacts
+data/
+tests/e2e/out/
+*.log
