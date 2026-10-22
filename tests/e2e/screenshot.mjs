@@ -30,6 +30,7 @@ const OUT = process.argv[2] || '/screens';
 const INGRESS = 'http://172.30.32.2';
 const APP = `${INGRESS}/api/hassio_ingress/abc/`;
 const USER_A = 'Alex Example';
+const USER_B = 'Zoë Ørsted';
 
 function loadPlaywright() {
   const candidates = [process.env.PLAYWRIGHT_MODULE, 'playwright', '/usr/lib/node_modules/playwright',
@@ -93,7 +94,7 @@ async function shoot(page, name) {
 }
 
 /** The signed-in checks, run against the frame (or page) the app lives in. */
-async function assertSignedIn(label, target) {
+async function assertSignedIn(label, target, user = USER_A) {
   const tabbar = target.locator('nav#tabbar');
   let shown = true;
   try { await tabbar.waitFor({ state: 'visible', timeout: 30_000 }); } catch { shown = false; }
@@ -105,7 +106,7 @@ async function assertSignedIn(label, target) {
     const r = await fetch('api/me', { credentials: 'same-origin' });
     return { status: r.status, body: await r.json().catch(() => null) };
   });
-  check(`${label}: the page's own GET api/me is HA user A`, me.status === 200 && me.body?.user?.name === USER_A, me);
+  check(`${label}: the page's own GET api/me is ${user}`, me.status === 200 && me.body?.user?.name === user, me);
   const hash = await target.evaluate(() => location.hash);
   check(`${label}: the app routed to its home screen`, hash === '#/home', hash);
 }
@@ -210,6 +211,48 @@ try {
     await shoot(page, 'panel-iframe-390x844.png');
     check('panel (390x844): no 5xx responses while loading', serverErrors(seen).length === 0, serverErrors(seen));
     check('panel (390x844): no frame-blocking console errors', frameBlocking(seen).length === 0, frameBlocking(seen));
+    await context.close();
+  }
+  // 4. A brand-new HA user's first open, on a phone in the panel: HA user B has no data at all
+  //    (client.mjs leaves profile B untouched), so this is what every household member sees the
+  //    first time. Top and bottom, plus the scroll sizes a screenshot cannot show.
+  {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    const seen = watch(page, 'first-open-390x844');
+    const resp = await page.goto(`${INGRESS}/panel.html?user=xyz`, { waitUntil: 'load', timeout: 60_000 });
+    check('first open: panel.html?user=xyz loads', resp?.status() === 200, resp?.status());
+    const frameEl = await page.waitForSelector('iframe#panel', { timeout: 10_000 });
+    const frame = await frameEl.contentFrame();
+    check('first open: the iframe has a document', !!frame);
+    if (frame) {
+      await assertSignedIn('first open (390x844)', frame, USER_B);
+      const data = await frame.evaluate(async () => {
+        const r = await fetch('api/data', { credentials: 'same-origin' });
+        return { status: r.status, body: await r.json().catch(() => null) };
+      });
+      check('first open: the new profile starts empty (nobody else\'s data)', data.status === 200 && data.body?.state === null, { status: data.status, state: data.body?.state === null ? null : 'present' });
+      await page.waitForTimeout(1_500);
+      await shoot(page, 'first-open-panel-390x844.png');
+      const sizes = await frame.evaluate(() => {
+        const el = document.scrollingElement || document.documentElement;
+        const before = { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth };
+        window.scrollTo(0, el.scrollHeight);
+        return { ...before, scrollY: Math.round(window.scrollY), scrollHeight: el.scrollHeight, viewportHeight: window.innerHeight,
+          fonts: [...document.fonts].map(f => `${f.family}:${f.status}`) };
+      });
+      const outer = await page.evaluate(() => {
+        const el = document.scrollingElement || document.documentElement;
+        return { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth };
+      });
+      seen.sizes = { frame: sizes, page: outer };
+      check('first open: no sideways scroll inside the frame at 390', sizes.scrollWidth <= sizes.clientWidth, sizes);
+      check('first open: HA\'s page itself never scrolls (one scroll area, the frame)', outer.scrollHeight <= outer.clientHeight && outer.scrollWidth <= outer.clientWidth, outer);
+      check('first open: no font failed to load', !sizes.fonts.some(f => f.endsWith(':error')), sizes.fonts);
+      await page.waitForTimeout(800);
+      await shoot(page, 'first-open-panel-390x844-bottom.png');
+    }
+    check('first open: no 5xx responses', serverErrors(seen).length === 0, serverErrors(seen));
     await context.close();
   }
 } catch (e) {

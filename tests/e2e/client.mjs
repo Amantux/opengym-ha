@@ -272,7 +272,12 @@ async function phaseDefault() {
   const mediaPath = `/api/media/${hash}`;
   const plainPut = await sendBody('PUT', INGRESS + A.prefix + mediaPath, video, { headers: [['Sec-Fetch-Site', 'same-origin']] });
   check('a plain 30 MiB PUT through ingress is refused by the (emulated) Supervisor limit: 413', plainPut.status === 413, `${plainPut.status} ${plainPut.text.slice(0, 200)}`);
-  const tunnelled = await sendBody('POST', INGRESS + A.prefix + mediaPath, video, { chunked: true, headers: [['Sec-Fetch-Site', 'same-origin'], ['X-OpenGym-Method', 'PUT']] });
+  // A wrong X-OpenGym-Length is refused by the gateway before openGym sees a whole request.
+  const lying = await sendBody('POST', INGRESS + A.prefix + mediaPath, video, { chunked: true, headers: [['Sec-Fetch-Site', 'same-origin'], ['X-OpenGym-Method', 'PUT'], ['X-OpenGym-Length', String(video.length - 1)]] });
+  check('a streamed upload that claims the wrong size: 400 from the gateway', lying.status === 400 && /not the size it said/.test(lying.text), `${lying.status} ${lying.text.slice(0, 200)}`);
+  // As ha-ingress.js sends it: streamed (the Supervisor drops the length), with the size alongside
+  // so openGym's quota books the real size.
+  const tunnelled = await sendBody('POST', INGRESS + A.prefix + mediaPath, video, { chunked: true, headers: [['Sec-Fetch-Site', 'same-origin'], ['X-OpenGym-Method', 'PUT'], ['X-OpenGym-Length', String(video.length)]] });
   check('the same 30 MiB video as a streamed POST + X-OpenGym-Method: PUT: 201 from openGym', tunnelled.status === 201 && tunnelled.json?.ok === true && tunnelled.json?.hash === hash
     && tunnelled.json?.mime === 'video/mp4' && tunnelled.json?.size === video.length, `${tunnelled.status} ${tunnelled.text.slice(0, 200)}`);
   const back = await getBytes(INGRESS + A.prefix + mediaPath);
