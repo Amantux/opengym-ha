@@ -11,6 +11,7 @@ test('defaults: empty options resolve to localhost with direct access off', () =
   assert.deepEqual(resolved, {
     ORIGIN: 'http://localhost:8099', RP_ID: 'localhost', DIRECT_ACCESS: 'false',
     PASSWORD_LOGIN: '0', INVITE_ONLY: '0', ALLOW_GUEST: '0', DEFAULT_LANG: '',
+    INSTALL_INTEGRATION: 'false',
   });
 });
 
@@ -69,6 +70,18 @@ test('booleans: true/false only', () => {
   }
 });
 
+test('install_integration: true/false only, unset = false', () => {
+  assert.equal(resolveOptions({ install_integration: true }).resolved.INSTALL_INTEGRATION, 'true');
+  assert.equal(resolveOptions({ install_integration: false }).resolved.INSTALL_INTEGRATION, 'false');
+  assert.equal(resolveOptions({ install_integration: null }).resolved.INSTALL_INTEGRATION, 'false');
+  assert.equal(resolveOptions({}).resolved.INSTALL_INTEGRATION, 'false');
+  for (const bad of ['true', 'yes', 1, 0, '', {}]) {
+    const r = resolveOptions({ install_integration: bad });
+    assert.equal(r.resolved, null, String(bad));
+    assert.match(r.problems.join(), /install_integration must be true or false/);
+  }
+});
+
 test('default_lang: tag shape only', () => {
   for (const good of ['de', 'pt-BR', 'pt_br', 'zh-TW', 'fil']) {
     assert.equal(resolveOptions({ default_lang: good }).resolved.DEFAULT_LANG, good);
@@ -83,10 +96,11 @@ test('default_lang: tag shape only', () => {
 test('every problem is reported together', () => {
   const { resolved, problems } = resolveOptions({
     external_url: 'ftp://x/y?z', password_login: 'yes', invite_only: 0, allow_guest: 'no', default_lang: 'nope!',
+    install_integration: 'on',
   });
   assert.equal(resolved, null);
   const all = problems.join('\n');
-  for (const key of ['external_url', 'password_login', 'invite_only', 'allow_guest', 'default_lang']) assert.match(all, new RegExp(key));
+  for (const key of ['external_url', 'password_login', 'invite_only', 'allow_guest', 'default_lang', 'install_integration']) assert.match(all, new RegExp(key));
   // external_url alone has three faults here (scheme, path, query): all of them, not the first.
   assert.equal(problems.filter(p => p.includes('external_url')).length, 3);
 });
@@ -103,7 +117,7 @@ test('every formatted value is in the shell-safe set, in a fixed order', () => {
   const lines = out.trim().split('\n');
   assert.deepEqual(lines.map(l => l.split('=')[0]), [
     'RESOLVED_ORIGIN', 'RESOLVED_RP_ID', 'RESOLVED_DIRECT_ACCESS', 'RESOLVED_PASSWORD_LOGIN',
-    'RESOLVED_INVITE_ONLY', 'RESOLVED_ALLOW_GUEST', 'RESOLVED_DEFAULT_LANG',
+    'RESOLVED_INVITE_ONLY', 'RESOLVED_ALLOW_GUEST', 'RESOLVED_DEFAULT_LANG', 'RESOLVED_INSTALL_INTEGRATION',
   ]);
   for (const l of lines) assert.match(l, /^RESOLVED_[A-Z_]+=[A-Za-z0-9._:/@-]*$/);
 });

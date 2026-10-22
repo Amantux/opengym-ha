@@ -12,24 +12,26 @@ const run = (args, env) => spawnSync(process.execPath, [CLI, ...args], { env: { 
 test('cli resolve prints RESOLVED_ lines and exits 0', () => {
   const dir = tmpDir();
   const file = path.join(dir, 'options.json');
-  fs.writeFileSync(file, JSON.stringify({ external_url: 'https://gym.example.com', invite_only: true, default_lang: 'de' }));
+  fs.writeFileSync(file, JSON.stringify({ external_url: 'https://gym.example.com', invite_only: true, default_lang: 'de', install_integration: true }));
   const r = run(['resolve'], { OPENGYM_OPTIONS_FILE: file });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, [
     'RESOLVED_ORIGIN=https://gym.example.com', 'RESOLVED_RP_ID=gym.example.com', 'RESOLVED_DIRECT_ACCESS=true',
-    'RESOLVED_PASSWORD_LOGIN=0', 'RESOLVED_INVITE_ONLY=1', 'RESOLVED_ALLOW_GUEST=0', 'RESOLVED_DEFAULT_LANG=de', '',
+    'RESOLVED_PASSWORD_LOGIN=0', 'RESOLVED_INVITE_ONLY=1', 'RESOLVED_ALLOW_GUEST=0', 'RESOLVED_DEFAULT_LANG=de',
+    'RESOLVED_INSTALL_INTEGRATION=true', '',
   ].join('\n'));
 });
 
 test('cli resolve: invalid options -> every problem on stderr, nothing on stdout, exit 1', () => {
   const dir = tmpDir();
   const file = path.join(dir, 'options.json');
-  fs.writeFileSync(file, JSON.stringify({ external_url: 'https://x.example/path', allow_guest: 'yes' }));
+  fs.writeFileSync(file, JSON.stringify({ external_url: 'https://x.example/path', allow_guest: 'yes', install_integration: 'yes' }));
   const r = run(['resolve'], { OPENGYM_OPTIONS_FILE: file });
   assert.equal(r.status, 1);
   assert.equal(r.stdout, '');
   assert.match(r.stderr, /external_url/);
   assert.match(r.stderr, /allow_guest/);
+  assert.match(r.stderr, /install_integration/);
 });
 
 test('cli discovery without SUPERVISOR_TOKEN logs the skip and exits 0', () => {

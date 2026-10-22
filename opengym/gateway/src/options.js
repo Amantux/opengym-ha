@@ -62,6 +62,13 @@ export function resolveOptions(options) {
     else problems.push(`${key} must be true or false (got ${quote(v)})`);
   }
 
+  // Read only by the entrypoint, which then runs the integration installer as root (true|false,
+  // like DIRECT_ACCESS: no upstream variable takes it).
+  const install = options.install_integration;
+  if (install === undefined || install === null) resolved.INSTALL_INTEGRATION = 'false';
+  else if (typeof install === 'boolean') resolved.INSTALL_INTEGRATION = install ? 'true' : 'false';
+  else problems.push(`install_integration must be true or false (got ${quote(install)})`);
+
   const lang = options.default_lang;
   if (unset(lang)) resolved.DEFAULT_LANG = '';
   else if (typeof lang === 'string' && LANG_TAG.test(lang.trim())) resolved.DEFAULT_LANG = lang.trim();
@@ -88,7 +95,7 @@ export function resolveOptionsFile(file) {
 }
 
 /** The CLI's output lines, in a fixed order. */
-export const RESOLVED_ORDER = ['ORIGIN', 'RP_ID', 'DIRECT_ACCESS', 'PASSWORD_LOGIN', 'INVITE_ONLY', 'ALLOW_GUEST', 'DEFAULT_LANG'];
+export const RESOLVED_ORDER = ['ORIGIN', 'RP_ID', 'DIRECT_ACCESS', 'PASSWORD_LOGIN', 'INVITE_ONLY', 'ALLOW_GUEST', 'DEFAULT_LANG', 'INSTALL_INTEGRATION'];
 export function formatResolved(resolved) {
   return RESOLVED_ORDER.map(name => `RESOLVED_${name}=${resolved[name]}`).join('\n') + '\n';
 }
