@@ -205,8 +205,10 @@ Request `{"weight": 80.2, "unit": "kg" | "lb", "date": "YYYY-MM-DD"?, "measured_
 - Entry `{d, w, t}`: `w` a Number in `S.unit || "kg"` rounded to 0.1;
   `t = max(Date.now(), old.t + 1, |S.deleted?.bodyweight?.[d]| + 1, S.resetAt + 1)` — `t` is
   the only thing merges and removals compare, so it must win.
-- `state` null (profile never synced) → `409 {"error":"This profile has no data yet. Open
-  openGym once, then try again."}` — never PUT a skeleton document.
+- `state` null (profile never synced) → `409 {"error":"This profile has no data yet. Log something
+  in openGym as that person (a workout, a weigh-in or any setting), then try again."}` —
+  opening the app alone does not create the state document (measured: the first boot only
+  GETs; the first PUT follows the first change) — never PUT a skeleton document.
 - `200 {"profile_id": "…", "entry": {"date": "…", "value": 80.2, "unit": "kg"}, "rev": 43}`;
   `400` invalid input; `404 {"error":"unknown profile"}`; `409 {"error":"the profile changed
   while saving, try again"}` after retries (or the no-data case above); `502 {"error":"openGym
