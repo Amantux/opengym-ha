@@ -11,14 +11,15 @@ updates:
         patterns: ["*"]
 
   # The upstream openGym images the add-on is built FROM (opengym/Dockerfile).
+  # Both are plain `FROM image:tag@sha256:digest` lines: Dependabot's Docker
+  # parser looks only at FROM lines, so an image named only in an ARG default
+  # (or in a build.yaml, which is gone) is never bumped. One PR updates both.
   # Grouped WITHOUT an update-types filter, majors included, on purpose: the api
   # and web images are one upstream release and must carry the same tag
   # (tools/addon_lint.py enforces it), so one PR per upstream release is the
   # reviewable unit — split PRs would each be red on their own.
-  # Two things a bump PR needs by hand (CI says so if forgotten):
-  #   * copy the new api reference into opengym/build.yaml for every arch
-  #     (the Supervisor reads build.yaml; Dependabot only edits the Dockerfile);
-  #   * set OPENGYM_VERSION in the Dockerfile to the new tag.
+  # One thing a bump PR needs by hand (CI says so if forgotten): set
+  # OPENGYM_VERSION in the Dockerfile to the new tag.
   # CI then checks the patch and the gateway against that upstream release's
   # source automatically (the checkout ref is derived from these tags).
   - package-ecosystem: "docker"

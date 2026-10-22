@@ -84,8 +84,9 @@ jobs:
           .venv/bin/python -m pip install -r tools/requirements-lint.txt
       # One script, so the rules live in one place with their reasons and every
       # failure says what to do: config.yaml (no image:, ingress, panel_admin,
-      # options == schema, translations), BUILD_FROM == build.yaml for every
-      # arch, api/web/OPENGYM_VERSION on one upstream release, version lockstep,
+      # options == schema, translations), the api image as the final FROM (no
+      # build.yaml, no ARG BUILD_FROM), api/web/OPENGYM_VERSION on one upstream
+      # release, version lockstep,
       # manifest key order, brand sizes + RGBA, DOCS/CHANGELOG, repository.yaml
       # and README buttons, hacs.json keys.
       - name: Add-on lint

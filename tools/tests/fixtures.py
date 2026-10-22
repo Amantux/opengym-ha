@@ -37,23 +37,15 @@ schema:
   password_login: bool
 """
 
-BUILD = f"""\
-build_from:
-  aarch64: {API}
-  amd64: {API}
-args:
-  OPENGYM_VERSION: "1.4.1"
-"""
-
 DOCKERFILE = f"""\
 # syntax=docker/dockerfile:1
 # Moved off ghcr.io/duartesantos8/opengym-web:1.3.0 in this commit; a reference in a comment
 # must never count as a pin.
-ARG BUILD_FROM={API}
 FROM {WEB} AS web
-FROM ${{BUILD_FROM}}
-ARG OPENGYM_VERSION=1.4.1
-ENV OPENGYM_VERSION=${{OPENGYM_VERSION}}
+FROM {API}
+ARG BUILD_VERSION=dev
+ENV OPENGYM_HA_VERSION=${{BUILD_VERSION}} \\
+    OPENGYM_VERSION=1.4.1
 COPY --from=web /usr/share/nginx/html /usr/share/nginx/html
 """
 
@@ -137,7 +129,6 @@ def write_png(root: Path, rel: str, size: tuple[int, int], mode: str = "RGBA") -
 
 def make_valid_tree(root: Path) -> Path:
     write(root, "opengym/config.yaml", CONFIG)
-    write(root, "opengym/build.yaml", BUILD)
     write(root, "opengym/Dockerfile", DOCKERFILE)
     write(root, "opengym/translations/en.yaml", TRANSLATIONS)
     write(root, "opengym/DOCS.md", DOCS)

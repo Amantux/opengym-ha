@@ -22,7 +22,7 @@ permissions:
 # There is deliberately NO image build/publish job (unlike myMeal/HomeHoard).
 # opengym/config.yaml has no `image:` key, so the Supervisor builds the add-on
 # locally on each user's machine FROM the official upstream openGym images,
-# pinned by digest in opengym/Dockerfile and opengym/build.yaml. The exercise
+# pinned by digest in opengym/Dockerfile's FROM lines. The exercise
 # media inside the upstream web image is licensed for use within openGym only;
 # publishing an image of our own would redistribute it. tools/addon_lint.py
 # fails the build if an `image:` key ever appears. A release here is therefore
@@ -40,9 +40,9 @@ jobs:
           persist-credentials: false
       - name: Upstream release the add-on ships
         id: upstream
-        # The one source of truth is the image tags in opengym/Dockerfile and
-        # build.yaml, so a Dependabot bump of the images re-runs this suite
-        # against the matching upstream source with no second pin to forget.
+        # The one source of truth is the image tags in opengym/Dockerfile's FROM
+        # lines, so a Dependabot bump of the images re-runs this suite against
+        # the matching upstream source with no second pin to forget.
         # Fails (and says why) if the api and web images disagree. Standard
         # library only: no venv exists yet.
         run: |
@@ -216,8 +216,8 @@ jobs:
     # opt out with the `skip-changelog` label (added after the PR opened? re-run
     # this job to pick it up). A Dependabot bump of the upstream images
     # (opengym/Dockerfile) is deliberately NOT exempt: a new openGym release is
-    # the most user-visible change this add-on has, and that PR needs hand edits
-    # anyway (build.yaml, OPENGYM_VERSION).
+    # the most user-visible change this add-on has, and that PR needs a hand
+    # edit anyway (OPENGYM_VERSION).
     name: Changelog entry
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

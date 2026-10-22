@@ -1,7 +1,0 @@
-# The Supervisor builds this add-on on the device (config.yaml has no `image:`). Both
-# architectures start from the same multi-arch upstream api image, pinned by digest: the
-# index holds linux/amd64 and linux/arm64, and Docker picks the one matching the device.
-# Keep this in step with the BUILD_FROM default in the Dockerfile.
-build_from:
-  aarch64: ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b
-  amd64: ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b

@@ -30,8 +30,10 @@ DOMAIN = "opengym"  # integration domain
 INGRESS_PORT = 8099  # docs/contract.md §1: the gateway listens here
 
 CONFIG = f"{ADDON}/config.yaml"
-BUILD = f"{ADDON}/build.yaml"
 DOCKERFILE = f"{ADDON}/Dockerfile"
+# The Supervisor's build files (find_one_filetype(path, "build", .json/.yaml/.yml)), deprecated
+# since Supervisor 2026.04 (supervisor/apps/build.py); every build setting is in the Dockerfile.
+LEGACY_BUILD_FILES = tuple(f"{ADDON}/build.{ext}" for ext in ("yaml", "yml", "json"))
 TRANSLATIONS = f"{ADDON}/translations/en.yaml"
 MANIFEST = f"custom_components/{DOMAIN}/manifest.json"
 
@@ -69,16 +71,14 @@ UPSTREAM_IMAGE = re.compile(
     r":(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]*)"
     r"(?:@(?P<digest>sha256:[0-9a-f]{64}))?"
 )
-# A literal OPENGYM_VERSION assignment: Dockerfile `ARG|ENV OPENGYM_VERSION=1.4.1`, the legacy
-# `ENV OPENGYM_VERSION 1.4.1`, or a build.yaml `args:` entry `OPENGYM_VERSION: "1.4.1"`. The
-# value must start with a digit so `${OPENGYM_VERSION}` pass-throughs are not mistaken for pins.
+# A literal OPENGYM_VERSION assignment in the Dockerfile: `ARG|ENV OPENGYM_VERSION=1.4.1` or the
+# legacy `ENV OPENGYM_VERSION 1.4.1`. The value must start with a digit so `${OPENGYM_VERSION}`
+# pass-throughs are not mistaken for pins.
 OPENGYM_VERSION = re.compile(
-    r"\bOPENGYM_VERSION(?:\s*[=:]\s*|\s+)[\"']?(?P<value>[0-9][0-9A-Za-z._+-]*)"
+    r"\bOPENGYM_VERSION(?:\s*=\s*|\s+)[\"']?(?P<value>[0-9][0-9A-Za-z._+-]*)"
 )
-BUILD_FROM_ARG = re.compile(
-    r"^\s*ARG\s+BUILD_FROM(?:=(?P<q>[\"']?)(?P<value>[^\"'\s]*)(?P=q))?\s*$",
-    re.IGNORECASE,
-)
+BUILD_FROM_ARG = re.compile(r"^\s*ARG\s+BUILD_FROM\b", re.IGNORECASE)
+FROM_LINE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(?P<image>\S+)", re.IGNORECASE)
 
 
 class Problem(NamedTuple):
@@ -116,21 +116,20 @@ def upstream_version(root: Path, problems: list[Problem]) -> str | None:
     test the code the image actually ships; a Dependabot image bump moves both together.
     """
     found: list[Problem] = []
-    texts = {rel: _read(root, rel, found) for rel in (DOCKERFILE, BUILD)}
-    if found:  # a file is missing
+    text = _read(root, DOCKERFILE, found)
+    if text is None:
         problems.extend(found)
         return None
     refs = []  # (file, part, tag, digest)
     versions = []  # (file, value)
-    for rel, text in texts.items():
-        for line in _code_lines(text):
-            refs += [(rel, m["part"], m["tag"], m["digest"]) for m in UPSTREAM_IMAGE.finditer(line)]
-            versions += [(rel, m["value"]) for m in OPENGYM_VERSION.finditer(line)]
+    for line in _code_lines(text):
+        refs += [(DOCKERFILE, m["part"], m["tag"], m["digest"]) for m in UPSTREAM_IMAGE.finditer(line)]
+        versions += [(DOCKERFILE, m["value"]) for m in OPENGYM_VERSION.finditer(line)]
 
     for part in ("api", "web"):
         if not any(r[1] == part for r in refs):
             found.append(Problem(
-                f"{DOCKERFILE} / {BUILD}",
+                DOCKERFILE,
                 f"no ghcr.io/duartesantos8/opengym-{part} image reference found",
                 "the add-on is built from both official upstream images (api as the base, web "
                 "for the SPA and exercise media); reference each as "
@@ -150,7 +149,7 @@ def upstream_version(root: Path, problems: list[Problem]) -> str | None:
     if len(tags) > 1:
         listed = ", ".join(sorted({f"{rel}: opengym-{part}:{tag}" for rel, part, tag, _ in refs}))
         found.append(Problem(
-            f"{DOCKERFILE} / {BUILD}",
+            DOCKERFILE,
             f"the upstream images carry different version tags ({listed})",
             "api and web are one upstream release and must move together; bump both to the "
             "same version, and OPENGYM_VERSION with them",
@@ -158,7 +157,7 @@ def upstream_version(root: Path, problems: list[Problem]) -> str | None:
 
     if not versions:
         found.append(Problem(
-            f"{DOCKERFILE} / {BUILD}",
+            DOCKERFILE,
             "no literal OPENGYM_VERSION found",
             "declare OPENGYM_VERSION=<upstream version> (docs/contract.md §3); the gateway "
             "reports it in /ha/v1/health",
@@ -283,52 +282,39 @@ def check_translations(root: Path, cfg: dict, problems: list[Problem]) -> None:
             ))
 
 
-def check_build(root: Path, cfg: dict, problems: list[Problem]) -> None:
+def check_build(root: Path, problems: list[Problem]) -> None:
+    for rel in LEGACY_BUILD_FILES:
+        if (root / rel).is_file():
+            problems.append(Problem(
+                rel,
+                "exists",
+                "delete it and keep every build setting in the Dockerfile. The Supervisor "
+                "deprecated build files in 2026.04 and warns about them on every build, and a "
+                "build_from there is a second pin of the api image that Dependabot cannot bump",
+            ))
     dockerfile = _read(root, DOCKERFILE, problems)
-    build = _load_yaml(root, BUILD, problems)
-    if dockerfile is None or build is None:
+    if dockerfile is None:
         return
-    matches = [m for m in map(BUILD_FROM_ARG.match, _code_lines(dockerfile)) if m]
-    if not matches:
+    lines = _code_lines(dockerfile)
+    if any(BUILD_FROM_ARG.match(line) for line in lines):
         problems.append(Problem(
             DOCKERFILE,
-            "declares no ARG BUILD_FROM",
-            "add `ARG BUILD_FROM=<upstream api image>` before the first FROM and build "
-            "`FROM ${BUILD_FROM}`; the Supervisor passes build.yaml's build_from through it",
+            "declares ARG BUILD_FROM",
+            "remove it and name the api image in the final FROM line. A Supervisor older than "
+            "2026.04 that finds no build.yaml passes BUILD_FROM=<Home Assistant's own base "
+            "image>, which replaces the ARG's default and builds the add-on on the wrong base",
         ))
-        return
-    default = matches[0]["value"]
-    if not default:
+    froms = [m["image"] for m in map(FROM_LINE.match, lines) if m]
+    final = froms[-1] if froms else ""
+    base = UPSTREAM_IMAGE.fullmatch(final)
+    if not base or base["part"] != "api":
         problems.append(Problem(
             DOCKERFILE,
-            "ARG BUILD_FROM has no default",
-            "give it the same reference as build.yaml's build_from, so a plain docker build "
-            "(CI smoke, tests/e2e/run.sh) builds exactly what the Supervisor builds",
+            f"the final stage is built FROM {final or '<no FROM line>'}",
+            "build it FROM ghcr.io/duartesantos8/opengym-api:<version>@sha256:<digest> "
+            "directly: the add-on runs upstream's api, and Dependabot only bumps an image that "
+            "a FROM line names",
         ))
-        return
-    build_from = build.get("build_from")
-    if not isinstance(build_from, dict):
-        problems.append(Problem(BUILD, "has no build_from mapping",
-                                "add build_from: with one <arch>: <image> entry per arch"))
-        return
-    archs = cfg.get("arch") if isinstance(cfg.get("arch"), list) else []
-    for arch in sorted(set(archs) | set(build_from)):
-        value = build_from.get(arch)
-        if value is None:
-            problems.append(Problem(
-                BUILD,
-                f"build_from has no entry for {arch} (config.yaml arch lists it)",
-                f"add build_from: {arch}: {default}",
-            ))
-        elif value != default:
-            problems.append(Problem(
-                BUILD,
-                f"build_from.{arch} is {value} but the Dockerfile's ARG BUILD_FROM default is "
-                f"{default}",
-                "make them identical. The Supervisor builds from build.yaml, while plain docker "
-                "builds and Dependabot use the Dockerfile: when Dependabot (or you) bumps the "
-                "Dockerfile, copy the same reference into build.yaml for every arch",
-            ))
 
 
 def check_versions(cfg: dict, manifest: dict, problems: list[Problem]) -> None:
@@ -478,12 +464,12 @@ def check_readme(root: Path, base: str, problems: list[Problem]) -> None:
 def lint(root: Path) -> list[Problem]:
     problems: list[Problem] = []
     upstream_version(root, problems)
+    check_build(root, problems)
     cfg = _load_yaml(root, CONFIG, problems)
     manifest = _load_json(root, MANIFEST, problems)
     if cfg is not None:
         check_config(cfg, problems)
         check_translations(root, cfg, problems)
-        check_build(root, cfg, problems)
         check_docs(root, str(cfg.get("version")), problems)
     if manifest is not None:
         check_manifest(manifest, problems)

@@ -4,9 +4,9 @@ slug: opengym
 description: Self-hosted gym and body-weight tracker. Every Home Assistant user gets their own profile, already signed in.
 url: https://github.com/Amantux/opengym-ha
 # No `image:` on purpose: the Supervisor builds this add-on on your device from the official
-# openGym images (pinned by digest in build.yaml). The exercise photos and animations bundled
-# with openGym are licensed to openGym only, so they must not be re-hosted in an image we
-# publish. Building locally means nobody but openGym distributes them.
+# openGym images (pinned by digest in the Dockerfile). The exercise photos and animations
+# bundled with openGym are licensed to openGym only, so they must not be re-hosted in an image
+# we publish. Building locally means nobody but openGym distributes them.
 arch:
   - aarch64
   - amd64

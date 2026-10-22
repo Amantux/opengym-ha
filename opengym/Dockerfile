@@ -3,15 +3,20 @@
 # Built LOCALLY by the Supervisor from this folder (config.yaml has no `image:`), on top of
 # the official upstream images pinned by digest. The exercise media bundled in the web image
 # is licensed to openGym only, so this repository never publishes an image that carries it.
-# build.yaml passes BUILD_FROM per architecture; the default is the same multi-arch ref, so a
-# plain `docker build opengym/` produces the same thing.
-ARG BUILD_FROM=ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b
+#
+# Both upstream images are named in plain FROM lines, so Dependabot bumps them together (one
+# PR per upstream release; OPENGYM_VERSION below is its one hand edit). Each digest is a
+# multi-arch index (linux/amd64 and linux/arm64), so one reference serves both add-on archs.
+# There is no build.yaml and no ARG BUILD_FROM, on purpose: the Supervisor deprecated
+# build.yaml in 2026.04, and an older Supervisor that finds no build.yaml passes
+# BUILD_FROM=<Home Assistant's own base image>, which would replace an ARG's default. With no
+# ARG it is an unused build argument, and the build ignores it.
 
 # Only a source of files (the built SPA, the exercise media, upstream's nginx server
 # template); none of its runtime is used.
 FROM ghcr.io/duartesantos8/opengym-web:1.4.1@sha256:e32cae9d2f4aad0c5e1b7888c9bfc712b2306ddfe3c65bc4cfefd4b0002e86d3 AS web
 
-FROM ${BUILD_FROM}
+FROM ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b
 
 # Passed by the Supervisor. "dev" marks a hand build.
 ARG BUILD_VERSION=dev

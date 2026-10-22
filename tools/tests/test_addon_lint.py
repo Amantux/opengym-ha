@@ -66,10 +66,10 @@ class ValidTree(LintCase):
 
     def test_old_reference_in_a_comment_is_ignored(self):
         # The fixture Dockerfile mentions opengym-web:1.3.0 in a comment; a trailing comment
-        # in build.yaml must not count either.
-        self.edit("opengym/build.yaml", "  amd64: ghcr",
-                  "  # was ghcr.io/duartesantos8/opengym-api:1.3.0\n  amd64: ghcr")
-        self.edit("opengym/build.yaml", '"1.4.1"', '"1.4.1"  # opengym-web:1.2.0')
+        # must not count either.
+        self.edit("opengym/Dockerfile", f"FROM {fixtures.API}\n",
+                  f"# was ghcr.io/duartesantos8/opengym-api:1.3.0\nFROM {fixtures.API}\n")
+        self.edit("opengym/Dockerfile", "OPENGYM_VERSION=1.4.1", "OPENGYM_VERSION=1.4.1  # opengym-web:1.2.0")
         self.assertEqual(addon_lint.lint(self.root), [])
 
     def test_unreleased_section_above_the_version_is_fine(self):
@@ -120,35 +120,47 @@ class AddonConfig(LintCase):
 
 
 class BuildPins(LintCase):
-    def test_build_from_drift_for_one_arch(self):
-        self.edit("opengym/build.yaml", "  aarch64: ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc0",
-                  "  aarch64: ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:0bc0")
-        problem = self.assert_only("opengym/build.yaml", "build_from.aarch64")
-        self.assertIn("copy the same reference into build.yaml", problem.fix)
+    def test_build_files_are_rejected(self):
+        # Deprecated by the Supervisor (2026.04), and a second api pin Dependabot cannot bump.
+        for name in ("build.yaml", "build.yml", "build.json"):
+            with self.subTest(name=name):
+                path = fixtures.write(self.root, f"opengym/{name}", f"build_from:\n  amd64: {fixtures.API}\n")
+                problem = self.assert_only(f"opengym/{name}", "exists", "deprecated", "Dependabot")
+                self.assertIn("delete it", problem.fix)
+                path.unlink()
 
-    def test_build_from_missing_an_arch(self):
-        self.edit("opengym/build.yaml",
-                  f"  amd64: {fixtures.API}\n", "")
-        self.assert_only("opengym/build.yaml", "no entry for amd64")
+    def test_build_from_arg_is_rejected(self):
+        # Even unused: an older Supervisor passes BUILD_FROM=<HA's base image> without a build.yaml.
+        self.edit("opengym/Dockerfile", f"FROM {fixtures.WEB} AS web\n",
+                  f"ARG BUILD_FROM={fixtures.API}\nFROM {fixtures.WEB} AS web\n")
+        self.assert_only("opengym/Dockerfile", "declares ARG BUILD_FROM", "wrong base")
 
-    def test_build_from_arg_without_default(self):
-        self.edit("opengym/Dockerfile", f"ARG BUILD_FROM={fixtures.API}\n", "ARG BUILD_FROM\n")
-        # The api reference now only lives in build.yaml, which is still a consistent pin.
-        self.assert_only("opengym/Dockerfile", "ARG BUILD_FROM has no default")
+    def test_build_from_shape_reports_both_problems(self):
+        # The shape this repo used to have: the api image only as an ARG default.
+        self.edit("opengym/Dockerfile", f"FROM {fixtures.API}\n",
+                  f"ARG BUILD_FROM={fixtures.API}\nFROM ${{BUILD_FROM}}\n")
+        problems = addon_lint.lint(self.root)
+        self.assertEqual(sorted(p.what for p in problems),
+                         ["declares ARG BUILD_FROM", "the final stage is built FROM ${BUILD_FROM}"])
+
+    def test_final_stage_must_be_the_api_image(self):
+        self.edit("opengym/Dockerfile", f"FROM {fixtures.API}\n",
+                  f"FROM {fixtures.API} AS api\nFROM node:22-alpine\n")
+        problem = self.assert_only("opengym/Dockerfile", "the final stage is built FROM node:22-alpine")
+        self.assertIn("Dependabot only bumps an image that a FROM line names", problem.fix)
 
     def test_api_and_web_tags_must_match(self):
         self.edit("opengym/Dockerfile", "opengym-web:1.4.1@", "opengym-web:1.5.0@")
-        self.assert_only("opengym/Dockerfile / opengym/build.yaml", "different version tags",
+        self.assert_only("opengym/Dockerfile", "different version tags",
                          "opengym-web:1.5.0", "opengym-api:1.4.1")
 
     def test_opengym_version_must_match_the_images(self):
-        self.edit("opengym/build.yaml", 'OPENGYM_VERSION: "1.4.1"', 'OPENGYM_VERSION: "1.4.0"')
-        self.assert_only("opengym/build.yaml", "OPENGYM_VERSION is 1.4.0", "1.4.1")
+        self.edit("opengym/Dockerfile", "OPENGYM_VERSION=1.4.1", "OPENGYM_VERSION=1.4.0")
+        self.assert_only("opengym/Dockerfile", "OPENGYM_VERSION is 1.4.0", "1.4.1")
 
     def test_opengym_version_must_exist(self):
-        self.edit("opengym/build.yaml", 'args:\n  OPENGYM_VERSION: "1.4.1"\n', "")
-        self.edit("opengym/Dockerfile", "ARG OPENGYM_VERSION=1.4.1", "ARG OPENGYM_VERSION")
-        self.assert_only("opengym/Dockerfile / opengym/build.yaml", "no literal OPENGYM_VERSION")
+        self.edit("opengym/Dockerfile", "OPENGYM_VERSION=1.4.1", "OPENGYM_VERSION=${BUILD_VERSION}")
+        self.assert_only("opengym/Dockerfile", "no literal OPENGYM_VERSION")
 
     def test_image_must_be_pinned_by_digest(self):
         self.edit("opengym/Dockerfile", "opengym-web:1.4.1@sha256:e32cae9d2f4aad0c5e1b7888c9bfc712b2306ddfe3c65bc4cfefd4b0002e86d3",
@@ -157,7 +169,7 @@ class BuildPins(LintCase):
 
     def test_web_image_must_be_referenced(self):
         self.edit("opengym/Dockerfile", f"FROM {fixtures.WEB} AS web", "FROM scratch AS web")
-        self.assert_only("opengym/Dockerfile / opengym/build.yaml", "opengym-web image reference")
+        self.assert_only("opengym/Dockerfile", "opengym-web image reference")
 
 
 class IntegrationMetadata(LintCase):

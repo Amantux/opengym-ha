@@ -3,9 +3,9 @@
 #
 #   bash tests/e2e/run.sh                       (CI's smoke job; builds the image first)
 #
-# It builds the add-on the way the Supervisor does (FROM build.yaml's pinned upstream api
-# image, BUILD_VERSION from config.yaml), then on a throwaway Docker network with the hassio
-# subnet 172.30.32.0/23:
+# It builds the add-on the way the Supervisor does (the Dockerfile's pinned upstream images,
+# the Supervisor's build args), then on a throwaway Docker network with the hassio subnet
+# 172.30.32.0/23:
 #   172.30.32.2   fake ingress (nginx): the ONE address the gateway trusts for HA identity
 #   172.30.32.3   assertion client (node): any other container on the network
 #   172.30.32.4   browser (Playwright), only with E2E_SCREENSHOT_DIR
@@ -97,7 +97,10 @@ mkdir -p "$OUT"
 if [ -n "$SHOTS" ] && [ -z "$PW_IMAGE" ]; then die "E2E_SCREENSHOT_DIR needs E2E_PLAYWRIGHT_IMAGE"; fi
 
 # ---------------------------------------------------------------------------------------
-# Build like the Supervisor: build.yaml's base for this machine's arch, config.yaml's version.
+# Build like the Supervisor: BUILD_VERSION (config.yaml's version) and BUILD_ARCH, which every
+# Supervisor passes, and the BUILD_FROM a Supervisor older than 2026.04 passes when there is no
+# build.yaml: Home Assistant's own base image. The Dockerfile must leave it unused (it names
+# the upstream api image in its FROM line), so a build that honoured it fails this suite.
 # ---------------------------------------------------------------------------------------
 VERSION=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$REPO/opengym/config.yaml")
 [ -n "$VERSION" ] || die "no version in opengym/config.yaml"
@@ -107,10 +110,9 @@ if [ "$BUILD" = 1 ]; then
     aarch64 | arm64) ARCH=aarch64 ;;
     *) die "unsupported machine $(uname -m)" ;;
   esac
-  BUILD_FROM=$(sed -n "s/^  $ARCH: *//p" "$REPO/opengym/build.yaml")
-  [ -n "$BUILD_FROM" ] || die "no build_from for $ARCH in opengym/build.yaml"
-  echo "e2e: building $IMAGE ($ARCH, $VERSION) FROM $BUILD_FROM"
-  if ! docker build --build-arg "BUILD_FROM=$BUILD_FROM" --build-arg "BUILD_VERSION=$VERSION" \
+  echo "e2e: building $IMAGE ($ARCH, $VERSION)"
+  if ! docker build --build-arg "BUILD_FROM=ghcr.io/home-assistant/$ARCH-base:latest" \
+    --build-arg "BUILD_VERSION=$VERSION" \
     --build-arg "BUILD_ARCH=$ARCH" -t "$IMAGE" "$REPO/opengym" >"$OUT/build.txt" 2>&1; then
     tail -40 "$OUT/build.txt" >&2
     die "docker build failed (full output in $OUT/build.txt)"
