@@ -1,0 +1,386 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  # Cancel superseded runs on the same PR; never cancel a push to the default
+  # branch (protects the version bump + release from interruption).
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege by default: the test jobs install and run third-party code
+# (upstream openGym's source and npm deps, the Home Assistant test harness), so
+# they must NOT inherit a token that can push. The two jobs that write
+# (bump-version, release) elevate themselves individually below.
+permissions:
+  contents: read
+
+# There is deliberately NO image build/publish job (unlike myMeal/HomeHoard).
+# opengym/config.yaml has no `image:` key, so the Supervisor builds the add-on
+# locally on each user's machine FROM the official upstream openGym images,
+# pinned by digest in opengym/Dockerfile and opengym/build.yaml. The exercise
+# media inside the upstream web image is licensed for use within openGym only;
+# publishing an image of our own would redistribute it. tools/addon_lint.py
+# fails the build if an `image:` key ever appears. A release here is therefore
+# only a git tag + GitHub release, which is what HACS offers as an update (the
+# Supervisor reads opengym/config.yaml's version on main).
+
+jobs:
+  gateway:
+    name: Gateway tests (Node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Upstream release the add-on ships
+        id: upstream
+        # The one source of truth is the image tags in opengym/Dockerfile and
+        # build.yaml, so a Dependabot bump of the images re-runs this suite
+        # against the matching upstream source with no second pin to forget.
+        # Fails (and says why) if the api and web images disagree. Standard
+        # library only: no venv exists yet.
+        run: |
+          version=$(python3 tools/addon_lint.py --upstream-version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Check out upstream openGym (source only, no media)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DuarteSantos8/openGym
+          ref: v${{ steps.upstream.outputs.version }}
+          path: upstream
+          persist-credentials: false
+          # What the gateway suite reads: api/queue.js (effectiveRoutineId, the
+          # function production imports from /app) and frontend/src/lib/units.js
+          # (live body-weight conversion parity). Neither needs node_modules.
+          sparse-checkout: |
+            api
+            frontend/src/lib
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"  # the upstream api image (the add-on's base) runs Node 22
+      - name: The checkout is that release
+        env:
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          got=$(node -p "require('./upstream/api/package.json').version")
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::upstream tag v$VERSION holds api version $got, not $VERSION"
+            exit 1
+          fi
+      - name: npm test
+        working-directory: opengym/gateway
+        env:
+          UPSTREAM_API_DIR: ${{ github.workspace }}/upstream/api
+          UPSTREAM_SRC: ${{ github.workspace }}/upstream
+        run: npm test
+
+  patch:
+    name: Upstream patch + upstream api suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Upstream release the add-on ships
+        id: upstream
+        # Same derivation as the gateway job (see there).
+        run: |
+          version=$(python3 tools/addon_lint.py --upstream-version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Check out upstream openGym (source only, no media)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DuarteSantos8/openGym
+          ref: v${{ steps.upstream.outputs.version }}
+          path: upstream
+          persist-credentials: false
+          # Upstream's api suite reads beyond api/: frontend/src/{lib,locales,views}
+          # (payload parity, nudge copy, the Coach intake limits), web/, helm/,
+          # kubernetes/ (the listen-port checks) and scripts/ (the api-docs tag
+          # check). Measured on v1.4.1: with exactly these directories the suite's
+          # result equals that of a checkout of everything but the media; with
+          # api + frontend/src/lib alone, six more tests fail on missing files,
+          # and run-tests.sh would then silently count them as "fails without the
+          # patch too". catalogue/media (the licensed exercise media) is never
+          # fetched.
+          sparse-checkout: |
+            api
+            frontend/src/lib
+            frontend/src/locales
+            frontend/src/views
+            web
+            helm
+            kubernetes
+            scripts
+      - name: Patch applies with no fuzz; upstream suite gains no failure; patch tests pass
+        # run-tests.sh runs everything inside node:22-alpine (docker is on the
+        # runner), mounting the checkout read-only.
+        run: bash opengym/patches/run-tests.sh upstream
+
+  lint:
+    name: Lint (ruff, shellcheck, add-on lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"  # the oldest Python this code runs on (ruff.toml)
+      - name: Install the lint toolchain (venv)
+        # Pinned in one file that local runs use too, so CI lints with exactly
+        # the ruff developers run; an unpinned ruff silently pulls releases whose
+        # changed behaviour then fails CI on unrelated, pre-existing code.
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r tools/requirements-lint.txt
+      - name: Ruff
+        run: .venv/bin/ruff check .
+      - name: Shellcheck (entrypoint)
+        # PID 1 of the add-on: signal forwarding and privilege drop live here.
+        run: shellcheck opengym/rootfs/usr/local/bin/opengym-entrypoint.sh
+      - name: Add-on lint's own tests
+        run: .venv/bin/python -m unittest discover -s tools/tests -v
+      - name: Add-on lint
+        run: .venv/bin/python tools/addon_lint.py
+
+  ha-tests:
+    # The matrix key in the name stops GitHub appending every matrix value, so
+    # the checks read "HA integration (latest)" / "HA integration (minimum)".
+    name: HA integration (${{ matrix.ha }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Two Home Assistant versions, each from an exactly-pinned harness:
+    # - latest: requirements_test.txt, bumped by Dependabot (py3.14: the current
+    #   harness declares Requires-Python >=3.14).
+    # - minimum: requirements_test_min.txt, the HA that hacs.json declares as our
+    #   floor (2024.11.0; its harness requires py3.12). Without this leg a
+    #   change that only works on new HA ships to users hacs.json still admits.
+    strategy:
+      fail-fast: false   # a minimum-HA break must not hide the latest result
+      matrix:
+        include:
+          - ha: latest
+            python: "3.14"
+            requirements: requirements_test.txt
+          - ha: minimum
+            python: "3.12"
+            requirements: requirements_test_min.txt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install harness (venv)
+        # Into a dedicated venv, never the runner's interpreter: the harness pins
+        # its own dependency set and downgrades whatever else lives there.
+        env:
+          REQUIREMENTS: custom_components/opengym/tests/${{ matrix.requirements }}
+        run: |
+          python -m venv .venv-ha
+          .venv-ha/bin/python -m pip install --upgrade pip
+          .venv-ha/bin/python -m pip install -r "$REQUIREMENTS"
+      - name: Check minimum leg runs the declared minimum HA
+        # requirements_test_min.txt is excluded from Dependabot; this catches it
+        # drifting (a manual bump, or the exclusion not holding) from hacs.json.
+        if: matrix.ha == 'minimum'
+        run: |
+          .venv-ha/bin/python - <<'EOF'
+          import json
+          from homeassistant.const import __version__ as installed
+          declared = json.load(open("hacs.json"))["homeassistant"]
+          assert installed == declared, f"minimum leg runs HA {installed}, hacs.json declares {declared}"
+          print(f"minimum leg: HA {installed} == hacs.json")
+          EOF
+      - name: Run integration tests
+        # asyncio_mode=auto: the async test fns have no per-test marker. sys.path
+        # is fixed in the tests' conftest so `custom_components.opengym` imports.
+        run: .venv-ha/bin/python -m pytest custom_components/opengym/tests -q -o asyncio_mode=auto
+
+  changelog:
+    # A PR that changes what users run must say so under "## Unreleased" in
+    # opengym/CHANGELOG.md; bump-version promotes that heading to the release.
+    # Dependency-manifest-only changes (Dependabot) and test-only changes are
+    # exempt; other PRs that touch shipped paths without a user-visible change
+    # opt out with the `skip-changelog` label (added after the PR opened? re-run
+    # this job to pick it up). A Dependabot bump of the upstream images
+    # (opengym/Dockerfile) is deliberately NOT exempt: a new openGym release is
+    # the most user-visible change this add-on has, and that PR needs hand edits
+    # anyway (build.yaml, OPENGYM_VERSION).
+    name: Changelog entry
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: List changed files
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff --name-only "origin/${BASE_REF}...HEAD" > "$RUNNER_TEMP/changed.txt"
+      - name: Require an Unreleased entry
+        env:
+          CHANGED_LIST: ${{ runner.temp }}/changed.txt
+          CHANGELOG: opengym/CHANGELOG.md
+          SKIP_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
+        run: |
+          set -eu
+          if [ "$SKIP_LABEL" = "true" ]; then
+            echo "skip-changelog label set; not checking."; exit 0
+          fi
+          # Shipped paths: the add-on folder (Dockerfile, gateway, patches,
+          # rootfs, docs) and the integration, minus tests and dependency
+          # manifests (one bot PR per bump).
+          shipped=$(grep -E '^(opengym/|custom_components/opengym/)' "$CHANGED_LIST" \
+            | grep -vE '(^|/)(tests?)/|(^|/)(requirements[^/]*\.txt|package-lock\.json)$' || true)
+          if [ -z "$shipped" ]; then
+            echo "No shipped paths changed; no changelog entry needed."; exit 0
+          fi
+          echo "Shipped paths changed:"
+          while IFS= read -r path; do echo "  $path"; done <<<"$shipped"
+          if ! grep -qxF "$CHANGELOG" "$CHANGED_LIST"; then
+            echo "::error file=$CHANGELOG::This PR changes shipped code but not $CHANGELOG. Add a user-facing bullet under '## Unreleased' (or label the PR skip-changelog)."
+            exit 1
+          fi
+          # Non-blank lines between "## Unreleased" and the next "## " heading.
+          body=$(awk '/^## Unreleased[ \t]*$/ {f=1; next} f && /^## / {exit} f && NF' "$CHANGELOG")
+          if [ -z "$body" ]; then
+            echo "::error file=$CHANGELOG::$CHANGELOG has no non-empty '## Unreleased' section. Put this PR's notes under that exact heading above the latest release."
+            exit 1
+          fi
+          echo "Changelog entry found."
+
+  smoke:
+    name: Add-on image smoke (fake-ingress e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Builds the add-on image from opengym/ exactly as the Supervisor would
+    # (FROM the pinned upstream images, patch applied at build) and drives it
+    # through a fake ingress peer. Only worth the build once the gateway and
+    # the patch are known good.
+    needs: [gateway, patch]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image and run the end-to-end suite
+        run: bash tests/e2e/run.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: e2e-output
+          path: tests/e2e/out/
+          if-no-files-found: ignore
+
+  # Auto-bump the version on every push to main (skips its own commit).
+  bump-version:
+    name: Auto-bump version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write   # pushes the version-bump commit
+    if: >
+      github.event_name == 'push' &&
+      !startsWith(github.event.head_commit.message, 'chore: bump version')
+    needs: [gateway, patch, lint, ha-tests, smoke]
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      bump_sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - name: Bump config.yaml + manifest.json + CHANGELOG.md in lockstep
+        id: bump
+        env:
+          # The triggering commit's SUBJECT decides the level: [major] or [minor]
+          # bumps that component (and zeroes the lower ones); otherwise a patch.
+          # tools/bump_version.py reads only the first line — a body that merely
+          # mentions "[minor]" once turned a minor release into 1.0.0 in myMeal.
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: python3 tools/bump_version.py
+      - name: Commit version bump
+        id: commit
+        env:
+          OLD: ${{ steps.bump.outputs.old_version }}
+          NEW: ${{ steps.bump.outputs.new_version }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add opengym/config.yaml custom_components/opengym/manifest.json opengym/CHANGELOG.md
+          git commit -m "chore: bump version ${OLD} → ${NEW}"
+          git push origin "HEAD:${BRANCH}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # Cut a GitHub release/tag per version: HACS reads releases to offer updates
+  # to the integration, and the add-on store shows the version from config.yaml
+  # at the tagged commit. Tags the bump commit, whose files already hold the
+  # new version.
+  release:
+    name: GitHub release (HACS)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # creates the GitHub release
+    timeout-minutes: 10
+    if: >
+      github.event_name == 'push' &&
+      !startsWith(github.event.head_commit.message, 'chore: bump version')
+    needs: [bump-version]
+    steps:
+      - name: Create release v${{ needs.bump-version.outputs.new_version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ needs.bump-version.outputs.new_version }}
+          SHA: ${{ needs.bump-version.outputs.bump_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Retry on transient GitHub API failures. A 503 here is not cosmetic:
+          # HACS validates the LATEST RELEASE, so a lost release leaves the repo
+          # shipping a version HACS users cannot get (it happened to myMeal v0.5.7).
+          create_release() {
+            gh release create "v${V}" \
+              --repo "$REPO" \
+              --target "$SHA" \
+              --title "v${V}" \
+              --notes "openGym for Home Assistant ${V}: the add-on (built locally by the Supervisor from the official openGym images) and the HACS integration. See opengym/CHANGELOG.md."
+          }
+
+          if gh release view "v${V}" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release v${V} already exists — skipping."
+            exit 0
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            if create_release; then
+              echo "Created release v${V} at ${SHA} (attempt ${attempt})"
+              exit 0
+            fi
+            # Another run may have won the race between our check and our create.
+            if gh release view "v${V}" --repo "$REPO" >/dev/null 2>&1; then
+              echo "Release v${V} appeared concurrently — nothing to do."
+              exit 0
+            fi
+            backoff=$((attempt * 15))
+            echo "Release creation failed (attempt ${attempt}/5); retrying in ${backoff}s." >&2
+            sleep "$backoff"
+          done
+
+          echo "::error::Could not create release v${V} after 5 attempts. The repo" \
+               "now ships a version with no release, and HACS serves the previous" \
+               "one. Re-run this job, or create the release manually." >&2
+          exit 1

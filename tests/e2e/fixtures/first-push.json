@@ -1,0 +1,50 @@
+{
+  "_comment": "The first PUT /api/data a fresh profile makes in openGym v1.4.1 after the user plans a routine and logs one workout: frontend/src/store/useStore.js DEF keys, a routine {id,name,emoji,ex}, a workout {id,d,start,end,routineId,name,bw,entries,prs,vol}. No bodyweight yet, so the integration's weigh-in is the only one. Fixed dates: the e2e asserts nothing that depends on today's date.",
+  "baseRev": 0,
+  "state": {
+    "unit": "kg",
+    "restSec": 90,
+    "restPauseSec": 15,
+    "sound": true,
+    "keepAwake": true,
+    "lang": "en",
+    "theme": "dark",
+    "accent": "lime",
+    "body": "male",
+    "targetW": null,
+    "weekStart": 1,
+    "bodyweight": [],
+    "routines": [
+      { "id": "r1", "name": "Push A", "emoji": "💪", "ex": [{ "id": "0025", "sets": 3, "reps": 8, "weight": 60 }] }
+    ],
+    "week": { "1": "r1" },
+    "dayPlan": {},
+    "dayNotes": {},
+    "measurements": [],
+    "customMeasurements": [],
+    "queue": null,
+    "rotation": null,
+    "scheduleMode": null,
+    "exWeights": { "0025": 60 },
+    "workouts": [
+      {
+        "id": "w1",
+        "d": "2026-10-20",
+        "start": 1792515600000,
+        "end": 1792518720000,
+        "routineId": "r1",
+        "name": "Push A",
+        "bw": null,
+        "entries": [
+          { "id": "0025", "sets": [{ "w": 60, "r": 8, "done": true }, { "w": 60, "r": 8, "done": true }, { "w": 60, "r": 8, "done": true }], "topW": 60 }
+        ],
+        "prs": [],
+        "vol": 1440
+      }
+    ],
+    "active": null,
+    "customEx": [],
+    "reminder": { "on": false, "time": "07:00", "tz": null, "nudge": false, "tone": "friendly" },
+    "_ts": 1792519200000
+  }
+}

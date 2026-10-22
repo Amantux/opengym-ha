@@ -1,0 +1,58 @@
+version: 2
+updates:
+  # GitHub Actions (keeps checkout/setup-* off deprecated runtimes). Every action
+  # is pinned to a commit SHA with a version comment; Dependabot updates both.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The upstream openGym images the add-on is built FROM (opengym/Dockerfile).
+  # Grouped WITHOUT an update-types filter, majors included, on purpose: the api
+  # and web images are one upstream release and must carry the same tag
+  # (tools/addon_lint.py enforces it), so one PR per upstream release is the
+  # reviewable unit — split PRs would each be red on their own.
+  # Two things a bump PR needs by hand (CI says so if forgotten):
+  #   * copy the new api reference into opengym/build.yaml for every arch
+  #     (the Supervisor reads build.yaml; Dependabot only edits the Dockerfile);
+  #   * set OPENGYM_VERSION in the Dockerfile to the new tag.
+  # CI then checks the patch and the gateway against that upstream release's
+  # source automatically (the checkout ref is derived from these tags).
+  - package-ecosystem: "docker"
+    directory: "/opengym"
+    schedule:
+      interval: "weekly"
+    groups:
+      opengym-upstream:
+        patterns: ["*"]
+
+  # HA integration test harness (the `latest` leg of CI's ha-tests). Each harness
+  # release pins one exact homeassistant, so a bump here is how a new HA reaches
+  # CI — one reviewable PR per HA release.
+  - package-ecosystem: "pip"
+    directory: "/custom_components/opengym/tests"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      ha-test-harness:
+        update-types: ["minor", "patch"]   # majors get their own PR for review
+    # requirements_test_min.txt pins the harness for the OLDEST HA we support
+    # (hacs.json); bumping it would silently stop testing that floor. CI also
+    # asserts its HA == hacs.json, in case this exclusion ever stops matching.
+    exclude-paths:
+      - "**/requirements_test_min.txt"
+
+  # The lint toolchain (ruff, Pillow, PyYAML) in tools/requirements-lint.txt.
+  # Pinned so CI and local runs agree; listed here so the pins do not rot.
+  - package-ecosystem: "pip"
+    directory: "/tools"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      lint-tools:
+        update-types: ["minor", "patch"]   # majors get their own PR for review

@@ -1,0 +1,11 @@
+# Lint toolchain for CI's `lint` job and ha-validate's `addon-lint` job, and for local runs:
+#   uv venv .venv --python 3.12 && uv pip install --python .venv/bin/python -r tools/requirements-lint.txt
+# Venv only, never a system interpreter.
+#
+# ruff is pinned to the version the sibling add-ons (myMeal, HomeHoard) lint with. ruff.toml
+# selects its rules explicitly, so a bump here cannot silently widen the rule set; Dependabot
+# proposes bumps as reviewable PRs.
+ruff==0.15.12
+# tools/addon_lint.py: brand image sizes/modes (Pillow) and add-on YAML (PyYAML).
+pillow==13.0.0
+PyYAML==6.0.3

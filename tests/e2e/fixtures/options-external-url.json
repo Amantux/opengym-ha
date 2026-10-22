@@ -1,0 +1,7 @@
+{
+  "external_url": "https://gym.example.test",
+  "password_login": false,
+  "invite_only": false,
+  "allow_guest": false,
+  "default_lang": ""
+}

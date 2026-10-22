@@ -1,0 +1,20 @@
+# gitleaks config — extend the default rules; never disable one, so a real
+# credential anywhere in the repo still fails the (blocking) scan in
+# .github/workflows/security-scan.yml.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Named test fixtures are not real secrets"
+# No path allowlist, on purpose (HomeHoard's lesson): exempting a test directory
+# wholesale would also hide a REAL key pasted into a test. Each fake fixture
+# value is allowlisted by its exact literal instead — gitleaks matches `regexes`
+# against the captured secret — and each entry names the files that use it.
+#
+# To add one: run `gitleaks detect --source . --no-git --redact=false -v`, confirm
+# the finding is a throwaway test value (not a key that ever worked), and add
+# '''^<exact literal>$''' below with a comment saying where it lives. Prefer
+# renaming an obviously fake fixture (e.g. "test-integration-token") over adding
+# an entry here.
+regexes = [
+]

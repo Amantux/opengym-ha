@@ -1,0 +1,14 @@
+# Trivy findings accepted with a documented reason. Keep this list short and
+# justified — an unexplained entry here is how a real finding gets buried.
+
+# DS-0002 — "Image user should not be 'root'".
+# opengym/Dockerfile intentionally has no final USER instruction. The container
+# must start as root for three things only, all in the entrypoint before any
+# server starts: chown the Supervisor-managed /data (whose ownership we do not
+# control), create /run/opengym 0700 for the api's internal socket, and render
+# the nginx template. It then runs EVERY long-running process — the gateway,
+# nginx and the openGym api — as the unprivileged `app` user (uid 1000) via
+# gosu, with HOME=/home/app (docs/contract.md §1), and fails loudly if /data is
+# not writable as that user. Only the supervising shell that forwards signals
+# stays root. Same model as the myMeal/HomeHoard add-ons.
+DS-0002

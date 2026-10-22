@@ -1,0 +1,39 @@
+# CodeQL scan configuration for openGym for Home Assistant.
+#
+# Why this file exists: CodeQL's defaults bury security findings in style noise.
+# Two deliberate narrowings live here; both are scoped so a REAL security finding
+# in shipped code still fires. Do not widen either without recording why.
+#
+# 1. `queries: security-extended` (not the default `security-and-quality`).
+#    The quality suite duplicates what ruff and the test suites already cover,
+#    and those alerts crowd out the security signal. `security-extended` keeps —
+#    and widens — the security queries while dropping the pure-style ones.
+#
+# 2. `paths-ignore` covers TEST code only, which never runs for a user: the image
+#    takes only opengym/gateway/src, rootfs and the applied patch (see
+#    opengym/Dockerfile), and while HACS copies custom_components/opengym/tests
+#    along with the integration, Home Assistant never imports it. Shipped code —
+#    opengym/gateway/src/**, opengym/rootfs/**, custom_components/opengym/*.py —
+#    is deliberately NOT excluded.
+
+name: "openGym HA CodeQL"
+
+# `queries` MUST be a list of query specs (each with `uses:`) — a bare scalar
+# fails codeql-action's config schema, which either reds the scan job or
+# silently falls back to the narrower default `code-scanning` suite.
+queries:
+  - uses: security-extended
+
+paths-ignore:
+  # Gateway unit tests: fake upstreams, fixture tokens, deliberately hostile
+  # headers — realistic attack shapes, by design.
+  - "opengym/gateway/test/**"
+  # The patch's own tests (run against upstream's api by run-tests.sh, never
+  # copied into the add-on image).
+  - "opengym/patches/test/**"
+  # Home Assistant integration tests (pytest harness).
+  - "custom_components/opengym/tests/**"
+  # The end-to-end harness (fake ingress peer, throwaway containers).
+  - "tests/**"
+  # Tests of the repo's own lint/bump tooling.
+  - "tools/tests/**"

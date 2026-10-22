@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home Assistant (fake ingress panel)</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #111; }
+  header { height: 48px; display: flex; align-items: center; padding: 0 16px; background: #03a9f4; color: #fff; font-size: 18px; }
+  iframe { display: block; border: 0; width: 100%; height: calc(100% - 48px); }
+</style>
+</head>
+<body>
+<header>openGym &middot; fake Home Assistant sidebar panel</header>
+<!-- What HA's sidebar panel does for an ingress add-on: a same-origin iframe of the ingress URL. -->
+<iframe id="panel" title="openGym" src="/api/hassio_ingress/abc/" allow="fullscreen"></iframe>
+</body>
+</html>
