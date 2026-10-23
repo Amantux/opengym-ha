@@ -1,6 +1,6 @@
 --- a/server.js
 +++ b/server.js
-@@ -2702,8 +2702,112 @@
+@@ -2702,8 +2702,114 @@
  // every other route's body still has to arrive within five minutes (bodyDeadline above).
  server.requestTimeout = 30 * 60000;
  server.headersTimeout = 60000;
@@ -19,8 +19,9 @@
 +// The sessions are upstream's own (makeSession), so signing out everywhere, disabling and deleting
 +// a profile end them the way they end any other. They last a minute: the gateway asks again for
 +// every request, and a session that outlived the HA sign-in behind it would only be a liability.
-+// makeSession itself is left as upstream wrote it (see haSession below), so this patch only ever
-+// adds to the end of the file and keeps applying as upstream changes the code above.
++// makeSession itself is left as upstream wrote it (see haSession below): this patch touches only the
++// end of the file, this block and the server.listen line after it, so it keeps applying as upstream
++// changes the code above.
 +//
 +// No socket peer address exists here (req.socket.remoteAddress is undefined), which is fine for
 +// the helpers reused below: readBody never reads it, and audit() then records no address (a header
@@ -32,12 +33,13 @@
 +// own sign(): the payload is `uid:exp:sv`, and from openGym 1.4.2 `uid:exp:sv:kind`. It is asked
 +// for as a cookie (`c`), a browser's kind, which upstream never renews into a long session and
 +// never takes for a paired phone; a release whose makeSession takes no kind ignores the argument.
-+// A payload of any other shape is refused (a 500 to the gateway, which then signs no one in)
-+// rather than re-signed into something upstream would read differently.
++// A payload of any other shape (another field count, a uid or exp that is not what was asked for)
++// is refused, a 500 to the gateway, which then signs no one in, rather than re-signed into
++// something upstream would read differently.
 +function haSession(user) {
 +  const token = makeSession(user, 'c');
 +  const fields = token.slice(0, token.lastIndexOf('.')).split(':');
-+  if (fields.length < 3 || fields[0] !== user.id || !/^[0-9]+$/.test(fields[1])) {
++  if ((fields.length !== 3 && fields.length !== 4) || fields[0] !== user.id || !/^[0-9]+$/.test(fields[1])) {
 +    throw new Error('makeSession returned a token this patch does not know');
 +  }
 +  fields[1] = String(Date.now() + HA_SESSION_MS);

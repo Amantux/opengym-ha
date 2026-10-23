@@ -41,7 +41,7 @@ function call(target, method, p, { body, headers = {} } = {}) {
         const text = Buffer.concat(chunks).toString('utf8');
         let json = null;
         try { json = JSON.parse(text); } catch { /* not JSON; `text` still has it */ }
-        resolve({ status: res.statusCode, body: json, text });
+        resolve({ status: res.statusCode, headers: res.headers, body: json, text });
       });
     });
     req.on('error', reject);
@@ -132,12 +132,30 @@ function decode(token) {
   const fields = payload.split(':');
   assert.ok(fields.length === 3 || fields.length === 4, `payload ${payload}`);
   const [uid, exp, sv, kind] = fields;
-  return { uid, exp: +exp, sv: +sv, kind };
+  return { uid, exp: +exp, sv: +sv, kind, fields: fields.length };
 }
 
-/* What every token the internal listener hands out must be: a browser cookie's kind (`c`) where the
-   release has kinds, never a paired phone's (`b`), which upstream renews and trusts as a device. */
-const assertCookieKind = tok => assert.ok(tok.kind === undefined || tok.kind === 'c', `kind ${tok.kind}`);
+/* The token upstream itself makes for a browser: the session cookie of its own password sign-up,
+   on an instance with PASSWORD_LOGIN on. Every token the internal listener hands out must have that
+   shape, the same fields and the same kind, whatever the release: from 1.4.2 a token without its
+   kind is read as a paired phone's, which /api/me renews into 90 days and account deletion trusts
+   as the device itself. Asked of upstream rather than assumed, so a release that changes it is
+   noticed here. */
+async function upstreamCookieToken(t) {
+  const h = await start(t, { env: { PASSWORD_LOGIN: '1' } });
+  const r = await h.tcp('POST', '/api/register/password', {
+    body: { name: 'Reference', password: 'a long reference passphrase 7' },
+    headers: { 'Sec-Fetch-Site': 'same-origin' }
+  });
+  assert.equal(r.status, 200, r.text);
+  const cookie = [].concat(r.headers['set-cookie'] || []).find(c => c.startsWith('gymsid='));
+  assert.ok(cookie, 'upstream sets its session cookie on a password sign-up');
+  return decode(cookie.slice('gymsid='.length).split(';')[0]);
+}
+function assertUpstreamShape(tok, ref) {
+  assert.equal(tok.fields, ref.fields, `${tok.fields} fields; upstream's own cookie token has ${ref.fields}`);
+  assert.equal(tok.kind, ref.kind, `kind ${tok.kind}; upstream's own cookie token has ${ref.kind}`);
+}
 
 /* Filesystem paths of the unix sockets the process has bound: its socket fds, looked up by inode
    in /proc/net/unix (whose last column is the path, present only for a socket bound to one). */
@@ -219,7 +237,7 @@ test('ha-session makes a profile tagged with the HA id, and its token is an upst
   const tok = decode(r.body.token);
   assert.equal(tok.uid, r.body.user.id);
   assert.equal(tok.sv, 0);
-  assertCookieKind(tok);
+  assertUpstreamShape(tok, await upstreamCookieToken(t));
   const me = await h.me(r.body.token);
   assert.equal(me.status, 200);
   // The fields this add-on relies on; upstream adds others over time (1.4.2: owner).
@@ -241,7 +259,8 @@ test('a token lives about 60 s and is never renewed as the cookie the gateway se
   const after = Date.now();
   const tok = decode(r.body.token);
   assert.ok(tok.exp >= before + 60000 && tok.exp <= after + 60000, `exp ${tok.exp - before} ms after the call`);
-  assertCookieKind(tok);
+  const ref = await upstreamCookieToken(t);
+  assertUpstreamShape(tok, ref);
 
   // GET /api/me renews a Bearer token past half its life, and never a cookie, which is why the
   // gateway injects a cookie and never a Bearer. Up to openGym 1.4.1 every token renews as a
@@ -252,7 +271,7 @@ test('a token lives about 60 s and is never renewed as the cookie the gateway se
   assert.equal('token' in asCookie.body, false);
   const asBearer = await h.tcp('GET', '/api/me', { headers: { Authorization: `Bearer ${r.body.token}` } });
   assert.equal(asBearer.status, 200);
-  if (tok.kind === 'c') {
+  if (ref.kind === 'c') {
     assert.equal('token' in asBearer.body, false, 'a cookie-kind token is renewed as a Bearer');
   } else {
     const renewed = decode(asBearer.body.token).exp - Date.now();
@@ -374,7 +393,7 @@ test('/internal/session: an existing profile gets a working 60 s token; unknown 
   const tok = decode(ok.body.token);
   assert.equal(tok.uid, 'live-user');
   assert.ok(tok.exp >= before + 60000 && tok.exp <= Date.now() + 60000);
-  assertCookieKind(tok);
+  assertUpstreamShape(tok, await upstreamCookieToken(t));
   assert.equal((await h.me(ok.body.token)).body.user.id, 'live-user');
 
   for (const body of [{ uid: 'locked-user' }, { uid: 'nobody' }, { uid: '' }, {}, { uid: { id: 'live-user' } }, { uid: ['live-user'] }]) {
