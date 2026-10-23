@@ -85,7 +85,8 @@ RUN node -e '\
   fs.writeFileSync(f, html.replace("<head>", `<head>\n<script src="./ha-ingress.js?v=${process.argv[1]}"></script>`));' \
   "${BUILD_VERSION}"
 COPY --from=web /etc/nginx/templates/default.conf.template /etc/opengym/nginx/default.conf.template
-COPY --from=web /tmp/opengym-template-defaults.env /etc/opengym/nginx/template-defaults.env
+# Root's, like the template: the web stage wrote it as its unprivileged user, and root renders it.
+COPY --from=web --chown=0:0 /tmp/opengym-template-defaults.env /etc/opengym/nginx/template-defaults.env
 
 # install_integration: the HACS integration, bundled as integration/ because the build context
 # is this folder (tools/sync_integration.py keeps it identical to custom_components/opengym).

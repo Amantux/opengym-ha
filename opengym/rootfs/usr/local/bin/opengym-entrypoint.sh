@@ -257,9 +257,11 @@ chmod 0700 /run/opengym
 #   BASE_PATH=         ingress strips its prefix before the gateway; the app derives its
 #                      API address from its own URL
 # Any other name gets the default upstream's web image declares for it, recorded at build (the
-# Dockerfile): openGym 1.4.2's CONTENT_SECURITY_POLICY is one. So a variable a new upstream
-# release adds works with no edit here, and one that neither sets stops the add-on now, by name,
-# rather than as nginx's "unknown variable". In a subshell, so none of it reaches the servers.
+# Dockerfile): openGym 1.4.2's CONTENT_SECURITY_POLICY is one. So a ${NAME} a new upstream
+# release adds with a default in its image's ENV works with no edit here, and one that neither
+# sets stops the add-on now, by name, rather than as nginx's "unknown variable" (as does an
+# unbraced or mixed-case one, which this does not substitute; CI's e2e meets either first). In a
+# subshell, so none of it reaches the servers.
 # Rendered as root into a root-owned file, so the app user cannot rewrite nginx's config.
 # ---------------------------------------------------------------------------------------
 NGINX_TEMPLATE=/etc/opengym/nginx/default.conf.template
