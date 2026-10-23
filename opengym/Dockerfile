@@ -15,7 +15,7 @@
 
 # Only a source of files (the built SPA, the exercise media, upstream's nginx server
 # template); none of its runtime is used...
-FROM ghcr.io/duartesantos8/opengym-web:1.4.1@sha256:e32cae9d2f4aad0c5e1b7888c9bfc712b2306ddfe3c65bc4cfefd4b0002e86d3 AS web
+FROM ghcr.io/duartesantos8/opengym-web:1.4.2@sha256:748c77417d40969d9840f064fd0cafecd84e47ac786d424688d0cff0d6b53299 AS web
 # ...and of the defaults its ENV gives that template's ${NAME} variables, which no file holds
 # (openGym 1.4.2's Content-Security-Policy is one): a NAME=value line for each variable the
 # template uses and this image declares. The entrypoint renders the template with them. In /tmp:
@@ -25,7 +25,7 @@ RUN for name in $(grep -o '\${[A-Z_][A-Z0-9_]*}' /etc/nginx/templates/default.co
       if value=$(printenv "$name"); then printf '%s=%s\n' "$name" "$value"; fi; \
     done > /tmp/opengym-template-defaults.env
 
-FROM ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b
+FROM ghcr.io/duartesantos8/opengym-api:1.4.2@sha256:57f4dd3fb9e4a6f48aa139b09de60398098ba85457f9498c1bcd4ac86c948f12
 
 # Passed by the Supervisor. "dev" marks a hand build.
 ARG BUILD_VERSION=dev
@@ -37,7 +37,7 @@ LABEL io.hass.version="${BUILD_VERSION}" \
 
 # Reported by the gateway's /ha/v1/health (contract §3, §10).
 ENV OPENGYM_HA_VERSION=${BUILD_VERSION} \
-    OPENGYM_VERSION=1.4.1
+    OPENGYM_VERSION=1.4.2
 
 COPY patches/ /tmp/opengym-patches/
 

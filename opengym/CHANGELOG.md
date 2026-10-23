@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- openGym 1.4.2 ([what's new](https://github.com/DuarteSantos8/openGym/releases/tag/v1.4.2)).
+
 ## 0.1.3
 
 - Maintenance release; no user-visible change.
