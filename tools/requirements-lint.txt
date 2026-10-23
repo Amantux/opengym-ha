@@ -5,7 +5,7 @@
 # ruff is pinned to the version the sibling add-ons (myMeal, HomeHoard) lint with. ruff.toml
 # selects its rules explicitly, so a bump here cannot silently widen the rule set; Dependabot
 # proposes bumps as reviewable PRs.
-ruff==0.15.12
+ruff==0.17.1
 # tools/addon_lint.py: brand image sizes/modes (Pillow) and add-on YAML (PyYAML).
 pillow==13.0.0
 PyYAML==6.0.3
