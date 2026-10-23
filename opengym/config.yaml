@@ -1,5 +1,5 @@
 name: openGym
-version: "0.1.1"
+version: "0.1.2"
 slug: opengym
 description: Self-hosted gym and body-weight tracker. Every Home Assistant user gets their own profile, already signed in.
 url: https://github.com/Amantux/opengym-ha

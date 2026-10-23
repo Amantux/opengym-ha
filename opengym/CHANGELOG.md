@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
 - New openGym releases now reach the add-on on their own: each is tested against everything the
   add-on relies on and, if it passes, released as the add-on's next version within the hour. The
