@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The Upstream sync workflow dispatches CI on each upstream/opengym-X.Y.Z branch it pushes (a
+  # push made with GITHUB_TOKEN starts no run). Every test job runs as for a push; bump-version
+  # then lands that commit on main, and upstream-failed reports a release that cannot land.
+  workflow_dispatch:
 
 concurrency:
   # Cancel superseded runs on the same PR; never cancel a push to the default
@@ -323,9 +327,12 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write   # pushes the version-bump commit
+    # A push to main (not this job's own commit), or an Upstream sync branch every test passed on.
     if: >
-      github.event_name == 'push' &&
-      !startsWith(github.event.head_commit.message, 'chore: bump version')
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'chore: bump version')) ||
+      (github.event_name == 'workflow_dispatch' &&
+       startsWith(github.ref, 'refs/heads/upstream/opengym-'))
     needs: [gateway, patch, lint, ha-tests, smoke]
     outputs:
       new_version: ${{ steps.bump.outputs.new_version }}
@@ -335,21 +342,53 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+          # A dispatched run checks out main, so the check below is main's own tool, never the
+          # branch's copy of it. A push run checks out its commit, as before.
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || '' }}
+      - name: Land the tested upstream commit (Upstream sync runs only)
+        id: land
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          CANDIDATE: ${{ github.sha }}  # the commit every test job ran on
+        run: |
+          set -u
+          git fetch --no-tags origin "$CANDIDATE"
+          # Only exactly what Upstream sync makes from this main may land: one commit, the
+          # Dockerfile pins and a changelog line (tools/upstream_sync.py landable).
+          rc=0
+          python3 tools/upstream_sync.py landable --base "$(git rev-parse HEAD)" --candidate "$CANDIDATE" || rc=$?
+          case $rc in
+            0) git merge --ff-only "$CANDIDATE"
+               echo "landed=true" >> "$GITHUB_OUTPUT" ;;
+            3) echo "::notice::main moved after ${CANDIDATE} was made from it; the next Upstream sync run rebuilds it on the new main."
+               echo "landed=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::${CANDIDATE} is not an Upstream sync commit on main; not landing it."
+               exit 1 ;;
+          esac
       - name: Bump config.yaml + both manifest.json + CHANGELOG.md in lockstep
         id: bump
+        if: github.event_name == 'push' || steps.land.outputs.landed == 'true'
         env:
           # The triggering commit's SUBJECT decides the level: [major] or [minor]
           # bumps that component (and zeroes the lower ones); otherwise a patch.
           # tools/bump_version.py reads only the first line — a body that merely
           # mentions "[minor]" once turned a minor release into 1.0.0 in myMeal.
           COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: python3 tools/bump_version.py
+        run: |
+          # A dispatched run has no head_commit; the landed commit (now HEAD) is the trigger.
+          if [ -z "$COMMIT_MSG" ]; then
+            COMMIT_MSG=$(git log -1 --format=%B)
+            export COMMIT_MSG
+          fi
+          python3 tools/bump_version.py
       - name: Commit version bump
         id: commit
+        if: steps.bump.outcome == 'success'
         env:
           OLD: ${{ steps.bump.outputs.old_version }}
           NEW: ${{ steps.bump.outputs.new_version }}
-          BRANCH: ${{ github.ref_name }}
+          # The only branch this job pushes: push runs are main's, and a dispatched run lands on it.
+          BRANCH: main
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -368,6 +407,18 @@ jobs:
             exit 0
           fi
           git fetch origin "$BRANCH"
+          # A dispatched run pushes two commits (the upstream one, then the bump) onto the main
+          # it checked out, HEAD~2. If main has moved since, nothing landed: the next Upstream
+          # sync run rebuilds the branch on the new main. If it has not, the push failed for
+          # some other reason, which is an error.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$(git rev-parse "origin/$BRANCH")" != "$(git rev-parse HEAD~2)" ]; then
+              echo "::notice::${BRANCH} moved while this run landed ${GITHUB_SHA}; the next Upstream sync run retries on it."
+              exit 0
+            fi
+            echo "::error::could not push ${GITHUB_SHA} and its version bump to ${BRANCH}"
+            exit 1
+          fi
           if git merge-base --is-ancestor "$GITHUB_SHA" "origin/$BRANCH" \
             && [ "$(git rev-parse "origin/$BRANCH")" != "$GITHUB_SHA" ]; then
             echo "::notice::${BRANCH} moved past ${GITHUB_SHA} while CI ran; the newer run bumps and releases."
@@ -388,8 +439,10 @@ jobs:
       contents: write   # creates the GitHub release
     timeout-minutes: 10
     if: >
-      github.event_name == 'push' &&
-      !startsWith(github.event.head_commit.message, 'chore: bump version') &&
+      ((github.event_name == 'push' &&
+        !startsWith(github.event.head_commit.message, 'chore: bump version')) ||
+       (github.event_name == 'workflow_dispatch' &&
+        startsWith(github.ref, 'refs/heads/upstream/opengym-'))) &&
       needs.bump-version.outputs.bump_sha != ''
     needs: [bump-version]
     steps:
@@ -435,3 +488,52 @@ jobs:
                "now ships a version with no release, and HACS serves the previous" \
                "one. Re-run this job, or create the release manually." >&2
           exit 1
+
+  # An Upstream sync run that did not land: say so where it will be seen. Its failure email goes
+  # to the bot that dispatched it, not to a person. One open issue per release, commented on by
+  # each later attempt; the Upstream sync workflow closes it once main pins that release.
+  upstream-failed:
+    name: Report an upstream release that could not land
+    if: >
+      failure() && github.event_name == 'workflow_dispatch' &&
+      startsWith(github.ref, 'refs/heads/upstream/opengym-')
+    needs: [gateway, patch, lint, ha-tests, smoke, bump-version, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write   # opens or comments on the issue; no checkout, no code run
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          version=${REF_NAME#upstream/opengym-}
+          if ! printf '%s' "$version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::unexpected branch ${REF_NAME}"; exit 1
+          fi
+          # tools/upstream_sync.py ISSUE_TITLE: the Upstream sync workflow closes it by this title.
+          title="openGym ${version} could not be pulled in automatically"
+          jobs=$(printf '%s' "$RESULTS" | jq -r 'to_entries[] | "- \(.key): \(.value.result)"')
+          body=$(cat <<EOF
+          Upstream openGym [${version}](https://github.com/DuarteSantos8/openGym/releases/tag/v${version}) was tested on \`${REF_NAME}\` (${SHA}) and did not land, so users stay on the release main pins.
+
+          Run: ${RUN_URL}
+
+          ${jobs}
+
+          The usual cause is the patch (\`opengym/patches/\`) no longer applying to upstream's \`api/server.js\`, or upstream changing something the gateway relies on. Fix it on main: any change on main makes the next Upstream sync run try ${version} again, and this issue closes itself once main pins it. A fix that has to pin ${version} by hand works too.
+          EOF
+          )
+          existing=$(gh issue list --repo "$REPO" --state open --limit 100 --json number,title \
+            --search "in:title \"${title}\"" | jq -r --arg t "$title" '.[] | select(.title == $t) | .number' | head -n 1)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body "$body"
+          fi

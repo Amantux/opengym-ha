@@ -1,0 +1,124 @@
+name: Upstream sync
+
+# Pulls each upstream openGym release into the add-on, unattended.
+#
+# openGym (DuarteSantos8/openGym) is not ours, so it cannot tell this repository it released:
+# this polls. Upstream publishes its images from a GitHub release (X.Y.Z, both archs) a few
+# minutes after it; pushes to its main publish only `edge`, which is never followed.
+#
+#   check    upstream's latest release, and both images at that tag (tools/upstream_sync.py)
+#   propose  one commit on main pinning it (FROM lines, OPENGYM_VERSION, a changelog line),
+#            pushed as upstream/opengym-X.Y.Z, then CI dispatched on that branch. A push with
+#            this token starts no workflow run; a workflow_dispatch does.
+#   CI       every test job, unchanged, on that commit. If all pass, CI's bump-version lands it
+#            on main with the version bump and the release job tags it, as for any push. If
+#            any fails, CI opens an issue and main is untouched.
+#
+# A version already tried on this main is not tried again. Any change on main (a fix for what
+# broke) retries it at the next run, and once main pins the release, the issue is closed here.
+# GitHub disables a public repository's schedules after 60 days with no activity in it: if
+# openGym is ever that quiet, re-enable this workflow under Actions.
+
+on:
+  schedule:
+    # Hourly, at an odd minute (top-of-the-hour schedules queue behind everyone else's).
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+# Least privilege by default; each job elevates only what it uses. Neither job runs upstream
+# code or installs a dependency: they run git, gh and the standard-library tools/upstream_sync.py.
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Look for a new upstream release
+    # A manual run from another branch would propose that branch's tree as main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write   # closes a "could not be pulled in" issue once main pins that release
+    outputs:
+      action: ${{ steps.check.outputs.action }}
+      version: ${{ steps.check.outputs.version }}
+      branch: ${{ steps.check.outputs.branch }}
+      api_digest: ${{ steps.check.outputs.api_digest }}
+      web_digest: ${{ steps.check.outputs.web_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Ask GitHub and GHCR
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/upstream_sync.py check
+      - name: Say what was found
+        if: steps.check.outputs.reason != ''
+        env:
+          REASON: ${{ steps.check.outputs.reason }}
+        run: echo "::notice::$REASON"
+      - name: Close issues main has caught up with
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT: ${{ steps.check.outputs.current }}
+        run: |
+          set -euo pipefail
+          # The title is tools/upstream_sync.py's ISSUE_TITLE, which CI's upstream-failed job uses.
+          gh issue list --repo "$REPO" --state open --limit 100 --json number,title \
+            --search 'in:title "could not be pulled in automatically"' \
+            | python3 tools/upstream_sync.py resolved --current "$CURRENT" \
+            | while read -r number; do
+                gh issue close "$number" --repo "$REPO" --reason completed \
+                  --comment "Main now pins openGym $CURRENT, so this is resolved."
+              done
+
+  propose:
+    name: Propose openGym ${{ needs.check.outputs.version }}
+    needs: check
+    if: needs.check.outputs.action == 'propose'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # pushes the upstream/opengym-X.Y.Z branch (never main)
+      actions: write    # dispatches CI on it
+    steps:
+      # The same commit the check job saw (both jobs check out this run's github.sha).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Pin the release
+        id: apply
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          API_DIGEST: ${{ needs.check.outputs.api_digest }}
+          WEB_DIGEST: ${{ needs.check.outputs.web_digest }}
+        run: |
+          python3 tools/upstream_sync.py apply --version "$VERSION" \
+            --api-digest "$API_DIGEST" --web-digest "$WEB_DIGEST"
+      - name: Push the branch
+        env:
+          BRANCH: ${{ needs.check.outputs.branch }}
+          SUBJECT: ${{ steps.apply.outputs.subject }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -eu
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add opengym/Dockerfile opengym/CHANGELOG.md
+          git commit -q -m "$SUBJECT" -m "Made by the Upstream sync workflow: both images at ${VERSION}, by digest, as multi-arch indexes, and a changelog line. CI lands it on main if every job passes. Release notes: https://github.com/DuarteSantos8/openGym/releases/tag/v${VERSION}"
+          # Force: a branch left from an older main is replaced by one made from this main.
+          git push --force origin "HEAD:refs/heads/${BRANCH}"
+      - name: Test it with CI (which lands it if every job passes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ needs.check.outputs.branch }}
+        run: |
+          gh workflow run ci.yml --repo "$REPO" --ref "$BRANCH"
+          echo "::notice::CI dispatched on ${BRANCH}: ${GITHUB_SERVER_URL}/${REPO}/actions/workflows/ci.yml"
