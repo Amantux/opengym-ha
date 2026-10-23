@@ -246,22 +246,42 @@ chown app:app /run/opengym
 chmod 0700 /run/opengym
 
 # ---------------------------------------------------------------------------------------
-# nginx server block: upstream's own template with EXACTLY the variables upstream's image
-# substitutes (contract §3). The explicit list matters: the template is full of nginx's own
-# $variables ($host, $remote_addr, $api_upstream, ...), which a bare envsubst would blank.
+# nginx server block: upstream's own template with every ${NAME} it uses substituted, and
+# nothing else (contract §3). Only those names: the template is full of nginx's own $variables
+# ($host, $remote_addr, $api_upstream, ...), which a bare envsubst would blank. These the add-on
+# sets itself:
 #   BACKEND=127.0.0.1  an IP literal, so nginx never asks RESOLVER (Docker's embedded DNS
 #                      address, which an add-on does not have; the template requires the
 #                      directive, nothing queries it)
 #   CF_CONNECTING_IP=  empty drops the header, so no client can forge it
 #   BASE_PATH=         ingress strips its prefix before the gateway; the app derives its
 #                      API address from its own URL
+# Any other name gets the default upstream's web image declares for it, recorded at build (the
+# Dockerfile): openGym 1.4.2's CONTENT_SECURITY_POLICY is one. So a variable a new upstream
+# release adds works with no edit here, and one that neither sets stops the add-on now, by name,
+# rather than as nginx's "unknown variable". In a subshell, so none of it reaches the servers.
 # Rendered as root into a root-owned file, so the app user cannot rewrite nginx's config.
 # ---------------------------------------------------------------------------------------
-# shellcheck disable=SC2016 # the ${...} below are envsubst's variable list, not expansions
-NGINX_PORT=127.0.0.1:8080 BACKEND=127.0.0.1 PORT=3000 RESOLVER=127.0.0.11 \
-CF_CONNECTING_IP='' BASE_PATH='' MEDIA_UPLOAD_MAX=48m \
-  envsubst '${NGINX_PORT} ${BACKEND} ${PORT} ${RESOLVER} ${CF_CONNECTING_IP} ${BASE_PATH} ${MEDIA_UPLOAD_MAX}' \
-  < /etc/opengym/nginx/default.conf.template > /etc/nginx/http.d/opengym.conf
+NGINX_TEMPLATE=/etc/opengym/nginx/default.conf.template
+NGINX_DEFAULTS=/etc/opengym/nginx/template-defaults.env
+(
+  export NGINX_PORT=127.0.0.1:8080 BACKEND=127.0.0.1 PORT=3000 RESOLVER=127.0.0.11 \
+    CF_CONNECTING_IP='' BASE_PATH='' MEDIA_UPLOAD_MAX=48m
+  vars=""
+  # shellcheck disable=SC2016 # a literal ${ to match, not an expansion
+  for name in $(grep -o '\${[A-Z_][A-Z0-9_]*}' "$NGINX_TEMPLATE" | tr -d '${}' | sort -u); do
+    case $name in
+      NGINX_PORT | BACKEND | PORT | RESOLVER | CF_CONNECTING_IP | BASE_PATH | MEDIA_UPLOAD_MAX) ;;
+      *)
+        line=$(grep -m 1 "^${name}=" "$NGINX_DEFAULTS") \
+          || fail "upstream's nginx template uses \${${name}}, which neither the add-on nor upstream's web image sets"
+        export "${name}=${line#*=}"
+        ;;
+    esac
+    vars="$vars \${${name}}"
+  done
+  envsubst "$vars" < "$NGINX_TEMPLATE" > /etc/nginx/http.d/opengym.conf
+) || exit 1
 checkpoint "after rendering the nginx config"
 
 # ---------------------------------------------------------------------------------------

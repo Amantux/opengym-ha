@@ -71,6 +71,7 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 | `/homeassistant/custom_components/opengym/.installed-by-opengym-addon` | the installer's marker: the version it installed, then the sha256 of the `manifest.json` it installed |
 | `/run/opengym-discovery/` | root:root 0700, discovery's state dir: the entrypoint copies the integration token into it (reading it as `app`) once the gateway answers `/healthz`; root never opens a path under `/data` |
 | `/etc/opengym/nginx/default.conf.template` | upstream `web/nginx.conf.template` verbatim (copied from the web image) |
+| `/etc/opengym/nginx/template-defaults.env` | `NAME=value` per template variable the web image declares in its `ENV`, recorded when the image is built (§3) |
 
 ## 3. Environment
 
@@ -83,8 +84,13 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 uploads stream through ingress (§6 step 6) instead of being capped.
 
 ### nginx template render (as root, before dropping privileges)
-`envsubst '${NGINX_PORT} ${BACKEND} ${PORT} ${RESOLVER} ${CF_CONNECTING_IP} ${BASE_PATH} ${MEDIA_UPLOAD_MAX}'`
-with `NGINX_PORT=127.0.0.1:8080 BACKEND=127.0.0.1 PORT=3000 RESOLVER=127.0.0.11 CF_CONNECTING_IP= BASE_PATH= MEDIA_UPLOAD_MAX=48m`.
+`envsubst` with exactly the `${NAME}`s the template uses (never a bare envsubst: nginx's own
+`$variables` would be blanked). The add-on sets `NGINX_PORT=127.0.0.1:8080 BACKEND=127.0.0.1
+PORT=3000 RESOLVER=127.0.0.11 CF_CONNECTING_IP= BASE_PATH= MEDIA_UPLOAD_MAX=48m`; every other
+name takes the default upstream's web image declares in its `ENV` (recorded at build in
+`template-defaults.env`; 1.4.2's `CONTENT_SECURITY_POLICY`). A name neither sets stops the add-on
+at boot, by name. The gateway turns that policy's `frame-ancestors 'none'` into `'self'` on
+ingress responses only (§6).
 
 ### gateway
 `GATEWAY_PORT=8099` `OPENGYM_DATA_DIR=/data/opengym` `GATEWAY_STATE_DIR=/data/gateway`

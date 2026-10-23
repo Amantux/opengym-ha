@@ -14,8 +14,16 @@
 # ARG it is an unused build argument, and the build ignores it.
 
 # Only a source of files (the built SPA, the exercise media, upstream's nginx server
-# template); none of its runtime is used.
+# template); none of its runtime is used...
 FROM ghcr.io/duartesantos8/opengym-web:1.4.1@sha256:e32cae9d2f4aad0c5e1b7888c9bfc712b2306ddfe3c65bc4cfefd4b0002e86d3 AS web
+# ...and of the defaults its ENV gives that template's ${NAME} variables, which no file holds
+# (openGym 1.4.2's Content-Security-Policy is one): a NAME=value line for each variable the
+# template uses and this image declares. The entrypoint renders the template with them. In /tmp:
+# the image runs as an unprivileged user, which cannot write to /.
+RUN for name in $(grep -o '\${[A-Z_][A-Z0-9_]*}' /etc/nginx/templates/default.conf.template \
+      | tr -d '${}' | sort -u); do \
+      if value=$(printenv "$name"); then printf '%s=%s\n' "$name" "$value"; fi; \
+    done > /tmp/opengym-template-defaults.env
 
 FROM ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b
 
@@ -77,6 +85,7 @@ RUN node -e '\
   fs.writeFileSync(f, html.replace("<head>", `<head>\n<script src="./ha-ingress.js?v=${process.argv[1]}"></script>`));' \
   "${BUILD_VERSION}"
 COPY --from=web /etc/nginx/templates/default.conf.template /etc/opengym/nginx/default.conf.template
+COPY --from=web /tmp/opengym-template-defaults.env /etc/opengym/nginx/template-defaults.env
 
 # install_integration: the HACS integration, bundled as integration/ because the build context
 # is this folder (tools/sync_integration.py keeps it identical to custom_components/opengym).
