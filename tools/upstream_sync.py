@@ -15,6 +15,11 @@ OPENGYM_VERSION and a changelog line. CI tests that commit like any other, and i
 job lands it on main only if `landable` (run from main's copy of this file, never the branch's)
 finds it is exactly what `apply` makes from main: one commit, those two files, those changes.
 
+A release is tried once per main: its branch, made from this main, is not made again while its CI
+run is under way or after that run has ended in anything but success. A run that ended otherwise,
+or images that are still not complete hours after the release, set `report`, and the workflow
+makes sure an issue says so. A branch whose dispatch never started a run is made again.
+
 Exit codes: 0 done; 1 refused or failed (with the reason on stderr); 3 (`landable` only) main
 moved since the candidate was made, so the next sync rebuilds it on the new main.
 Standard library only: every caller runs on the runner's own python3.
@@ -33,6 +38,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 import addon_lint  # its upstream-pin half is standard library only
@@ -50,12 +56,16 @@ INDEX_TYPES = (
 BRANCH_PREFIX = "upstream/opengym-"
 # CI's upstream-failed job builds the same title from the branch name; keep the two in step.
 ISSUE_TITLE = "openGym {version} could not be pulled in automatically"
-ISSUE_TITLE_RE = re.compile(r"^openGym (\d+\.\d+\.\d+) could not be pulled in automatically$")
+ISSUE_TITLE_RE = re.compile(r"^openGym ([0-9]+\.[0-9]+\.[0-9]+) could not be pulled in automatically$")
 # The only files a sync commit may touch.
 SYNC_FILES = (addon_lint.DOCKERFILE, bump_version.CHANGELOG)
 
-TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+# [0-9], not \d: \d also matches other scripts' digits, which int() would read as a version.
+TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
+VERSION = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
+# How long a release may go without both images serving both archs before an issue says so.
+STALLED_AFTER = 6 * 3600
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -162,6 +172,15 @@ def pinned(dockerfile: str) -> tuple[str, dict[str, str]]:
     return tags.pop(), digests
 
 
+def _rewrite(path: Path, change: Callable[[str], str]) -> None:
+    # newline="": no newline translation either way, so the file is exactly what `landable`
+    # re-derives from main's bytes.
+    with open(path, encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(change(text))
+
+
 def apply(root: Path, version: str, digests: dict[str, str]) -> tuple[str, str]:
     """Pin `version` in the tree at `root`; returns (old version, commit subject)."""
     problems: list[addon_lint.Problem] = []
@@ -170,12 +189,8 @@ def apply(root: Path, version: str, digests: dict[str, str]) -> tuple[str, str]:
         raise SyncError("; ".join(f"{p.where}: {p.what}" for p in problems))
     if parse_version(version) <= parse_version(old):
         raise SyncError(f"openGym {version} is not newer than the pinned {old}")
-    dockerfile = root / addon_lint.DOCKERFILE
-    dockerfile.write_text(rewrite_dockerfile(dockerfile.read_text(encoding="utf-8"), version, digests),
-                          encoding="utf-8")
-    changelog = root / bump_version.CHANGELOG
-    changelog.write_text(add_changelog_entry(changelog.read_text(encoding="utf-8"), version),
-                         encoding="utf-8")
+    _rewrite(root / addon_lint.DOCKERFILE, lambda text: rewrite_dockerfile(text, version, digests))
+    _rewrite(root / bump_version.CHANGELOG, lambda text: add_changelog_entry(text, version))
     problems = []
     if addon_lint.upstream_version(root, problems) != version:
         raise SyncError("the rewritten Dockerfile does not pin "
@@ -207,8 +222,8 @@ def http_get(url: str, headers: dict[str, str]) -> bytes:
     raise AssertionError("unreachable")
 
 
-def latest_release(fetch: Fetch, token: str = "") -> str:
-    """Upstream's latest published release (GitHub excludes drafts and prereleases)."""
+def latest_release(fetch: Fetch, token: str = "") -> tuple[str, float]:
+    """Upstream's latest published release and when it was published (no drafts, prereleases)."""
     headers = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -218,7 +233,12 @@ def latest_release(fetch: Fetch, token: str = "") -> str:
     m = TAG.match(tag) if isinstance(tag, str) else None
     if not m or data.get("draft") or data.get("prerelease"):
         raise SyncError(f"upstream's latest release has an unexpected tag {tag!r}")
-    return ".".join(m.groups())
+    published = data.get("published_at")
+    try:
+        when = datetime.fromisoformat(str(published).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        raise SyncError(f"upstream's latest release has no usable published_at ({published!r})") from None
+    return ".".join(m.groups()), when
 
 
 def index_digest(fetch: Fetch, part: str, version: str) -> str | None:
@@ -266,27 +286,48 @@ def index_serves_archs(body: bytes) -> bool:
     return PLATFORMS <= found
 
 
-def git(root: Path, *args: str, strip: bool = True) -> str:
-    out = subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
-                         text=True).stdout
-    return out.strip() if strip else out
+def git(root: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
+                          text=True).stdout.strip()
 
 
-def tried_on(root: Path, branch: str) -> str | None:
-    """The parent of origin's `branch` (the main it was made from), or None if there is none."""
+def tried_on(root: Path, branch: str) -> tuple[str, str] | None:
+    """(the main origin's `branch` was made from, its tip), or None if there is no such branch."""
     if not git(root, "ls-remote", "--heads", "origin", f"refs/heads/{branch}"):
         return None
     git(root, "fetch", "--quiet", "--no-tags", "--depth=2", "origin", f"refs/heads/{branch}")
-    return git(root, "rev-parse", "FETCH_HEAD^")
+    return git(root, "rev-parse", "FETCH_HEAD^"), git(root, "rev-parse", "FETCH_HEAD")
 
 
-def check(root: Path, fetch: Fetch, token: str, tried: Callable[[str], str | None],
-          head: str) -> dict[str, str]:
+Run = dict[str, str]
+
+
+def ci_run(fetch: Fetch, token: str, repo: str, sha: str) -> Run | None:
+    """The newest dispatched CI run on `sha` ({status, conclusion, url}), or None if none started."""
+    if not SHA.match(sha) or not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
+        raise SyncError(f"cannot look up CI runs for {repo!r} at {sha!r}")
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = (f"https://api.github.com/repos/{repo}/actions/workflows/ci.yml/runs"
+           f"?head_sha={sha}&event=workflow_dispatch&per_page=1")
+    runs = _json(fetch(url, headers), url).get("workflow_runs")
+    if not isinstance(runs, list):
+        raise SyncError(f"{url} returned no workflow_runs")
+    if not runs:
+        return None
+    run = runs[0]
+    return {key: str(run.get(name) or "") for key, name in
+            (("status", "status"), ("conclusion", "conclusion"), ("url", "html_url"))}
+
+
+def check(root: Path, fetch: Fetch, token: str, tried: Callable[[str], tuple[str, str] | None],
+          head: str, runs: Callable[[str], Run | None], now: float) -> dict[str, str]:
     problems: list[addon_lint.Problem] = []
     current = addon_lint.upstream_version(root, problems)
     if current is None:
         raise SyncError("; ".join(f"{p.where}: {p.what}" for p in problems))
-    latest = latest_release(fetch, token)
+    latest, published = latest_release(fetch, token)
     out = {"current": current, "version": latest}
     if parse_version(latest) <= parse_version(current):
         out["action"] = "none"
@@ -303,17 +344,33 @@ def check(root: Path, fetch: Fetch, token: str, tried: Callable[[str], str | Non
         return out
     branch = BRANCH_PREFIX + latest
     out["branch"] = branch
-    if tried(branch) == head:
-        out["action"] = "none"
-        out["reason"] = (f"{branch} was already made from this main ({head[:12]}); its CI run, "
-                         "or the issue it opened, says how it went. A change on main retries it.")
-        return out
+    attempt = tried(branch)
+    if attempt and attempt[0] == head:
+        run = runs(attempt[1])
+        if run is not None:
+            out["action"] = "none"
+            if run["status"] != "completed":
+                out["reason"] = f"CI is testing {branch}: {run['url']}"
+            elif run["conclusion"] == "success":
+                out["reason"] = f"CI passed on {branch} ({run['url']}); it lands, or main moved"
+            else:
+                # Tried on this main: only a change on main tries it again. A failure has its issue
+                # from CI already; a cancelled or timed-out run would otherwise say nothing at all.
+                out["reason"] = (f"CI on {branch} ended {run['conclusion'] or run['status']} "
+                                 f"({run['url']}); a change on main tries it again")
+                out["report"] = out["reason"]
+            return out
+        # The branch exists but its dispatch never started a run: make it and dispatch again.
     digests = {part: index_digest(fetch, part, latest) for part in IMAGES}
     missing = [f"opengym-{part}" for part, digest in digests.items() if digest is None]
     if missing:
         out["action"] = "wait"
         out["reason"] = (f"openGym {latest} is released but {', '.join(missing)} does not yet "
                          "serve linux/amd64 and linux/arm64; the next run looks again")
+        hours = (now - published) / 3600
+        if now - published > STALLED_AFTER:
+            out["report"] = (f"openGym {latest} was released {hours:.0f} h ago, but "
+                             f"{', '.join(missing)} still does not serve linux/amd64 and linux/arm64")
         return out
     out.update(action="propose", api_digest=digests["api"], web_digest=digests["web"],
                subject=commit_subject(current, latest))
@@ -341,24 +398,39 @@ def landable(root: Path, base: str, candidate: str) -> None:
         if moved:
             raise SystemExit(MOVED)
         raise SyncError(f"{candidate[:12]} was not made from main ({base[:12]})")
-    changed = git(root, "diff", "--name-only", "--no-renames", base, candidate).splitlines()
-    extra = sorted(set(changed) - set(SYNC_FILES))
-    if extra:
-        raise SyncError(f"{candidate[:12]} changes more than a sync commit may: {', '.join(extra)}")
+    # --raw: each change with both modes, so a file made executable or turned into a symlink is a
+    # change too, not only one whose content differs.
+    for line in git(root, "diff", "--raw", "--no-renames", "--no-abbrev", base, candidate).splitlines():
+        meta, _, rel = line.partition("\t")
+        old_mode, new_mode, *_, status = meta.lstrip(":").split()
+        if rel not in SYNC_FILES:
+            raise SyncError(f"{candidate[:12]} changes more than a sync commit may: {rel}")
+        if status != "M" or old_mode != new_mode:
+            raise SyncError(f"{candidate[:12]} changes {rel} beyond its content ({status}, "
+                            f"{old_mode} -> {new_mode})")
 
-    def show(rev: str, rel: str) -> str:
-        return git(root, "show", f"{rev}:{rel}", strip=False)
+    def show(rev: str, rel: str) -> bytes:
+        # Bytes, compared as bytes: decoded text would turn a bare CR into a newline, and a
+        # Dockerfile line hidden behind one would pass for the line the comparison expects.
+        return subprocess.run(["git", "-C", str(root), "show", f"{rev}:{rel}"], check=True,
+                              capture_output=True).stdout
 
-    version, digests = pinned(show(candidate, addon_lint.DOCKERFILE))
-    old, _ = pinned(show(base, addon_lint.DOCKERFILE))
+    def text(rev: str, rel: str) -> str:
+        try:
+            return show(rev, rel).decode("utf-8")
+        except UnicodeDecodeError:
+            raise SyncError(f"{rev[:12]}: {rel} is not UTF-8") from None
+
+    version, digests = pinned(text(candidate, addon_lint.DOCKERFILE))
+    old, _ = pinned(text(base, addon_lint.DOCKERFILE))
     if parse_version(version) <= parse_version(old):
         raise SyncError(f"{candidate[:12]} pins openGym {version}, not newer than main's {old}")
     want = {
-        addon_lint.DOCKERFILE: rewrite_dockerfile(show(base, addon_lint.DOCKERFILE), version, digests),
-        bump_version.CHANGELOG: add_changelog_entry(show(base, bump_version.CHANGELOG), version),
+        addon_lint.DOCKERFILE: rewrite_dockerfile(text(base, addon_lint.DOCKERFILE), version, digests),
+        bump_version.CHANGELOG: add_changelog_entry(text(base, bump_version.CHANGELOG), version),
     }
-    for rel, text in want.items():
-        if show(candidate, rel) != text:
+    for rel, wanted in want.items():
+        if show(candidate, rel) != wanted.encode("utf-8"):
             raise SyncError(f"{candidate[:12]}: {rel} is not what a sync to {version} makes from main")
 
 
@@ -376,6 +448,15 @@ def resolved(issues: list[dict], current: str) -> list[int]:
 # --------------------------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------------------------
+
+
+def origin_repo(root: Path) -> str:
+    """owner/name of a github.com origin, for a run outside Actions (no GITHUB_REPOSITORY)."""
+    m = re.match(r"^(?:https://github\.com/|git@github\.com:)([^/]+/[^/]+?)(?:\.git)?/?$",
+                 git(root, "remote", "get-url", "origin"))
+    if not m:
+        raise SyncError("origin is not a github.com repository; set GITHUB_REPOSITORY")
+    return m[1]
 
 
 def emit(values: dict[str, str]) -> None:
@@ -408,8 +489,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "check":
             token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+            repo = os.environ.get("GITHUB_REPOSITORY") or origin_repo(root)
             emit(check(root, http_get, token, lambda branch: tried_on(root, branch),
-                       git(root, "rev-parse", "HEAD")))
+                       git(root, "rev-parse", "HEAD"), lambda sha: ci_run(http_get, token, repo, sha),
+                       time.time()))
         elif args.command == "apply":
             old, subject = apply(root, args.version, {"api": args.api_digest, "web": args.web_digest})
             emit({"old": old, "version": args.version, "subject": subject})

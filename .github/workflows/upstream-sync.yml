@@ -14,8 +14,11 @@ name: Upstream sync
 #            on main with the version bump and the release job tags it, as for any push. If
 #            any fails, CI opens an issue and main is untouched.
 #
-# A version already tried on this main is not tried again. Any change on main (a fix for what
-# broke) retries it at the next run, and once main pins the release, the issue is closed here.
+# A version already tried on this main is not tried again: not while its CI run is under way, and
+# not after it ended in anything but success. Any change on main (a fix for what broke) retries it at
+# the next run, and once main pins the release, the issue is closed here. A run that ended without
+# opening an issue (cancelled, timed out) or images still incomplete hours after the release get
+# one from here, so nothing stalls unseen. A dispatch that never started a run is simply redone.
 # GitHub disables a public repository's schedules after 60 days with no activity in it: if
 # openGym is ever that quiet, re-enable this workflow under Actions.
 
@@ -43,7 +46,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      issues: write   # closes a "could not be pulled in" issue once main pins that release
+      actions: read   # how the CI run on an already-made branch ended
+      issues: write   # opens or closes the "could not be pulled in" issue
     outputs:
       action: ${{ steps.check.outputs.action }}
       version: ${{ steps.check.outputs.version }}
@@ -64,6 +68,28 @@ jobs:
         env:
           REASON: ${{ steps.check.outputs.reason }}
         run: echo "::notice::$REASON"
+      - name: Make sure an issue says why a release is stuck
+        if: steps.check.outputs.report != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.check.outputs.version }}
+          REPORT: ${{ steps.check.outputs.report }}
+        run: |
+          set -euo pipefail
+          # tools/upstream_sync.py ISSUE_TITLE, which CI's upstream-failed job uses too. Only the bot's
+          # own issues count: anyone can open one with this title.
+          title="openGym ${VERSION} could not be pulled in automatically"
+          open=$(gh issue list --repo "$REPO" --state open --author app/github-actions --limit 100 \
+            --json number,title --search "in:title \"${title}\"" \
+            | jq -r --arg t "$title" '.[] | select(.title == $t) | .number' | head -n 1)
+          if [ -n "$open" ]; then
+            echo "Issue #${open} already says so."
+            exit 0
+          fi
+          gh issue create --repo "$REPO" --title "$title" --body "${REPORT}.
+
+          Users stay on the release main pins. Fix it on main: any change on main makes the next Upstream sync run try ${VERSION} again, and this issue closes itself once main pins it."
       - name: Close issues main has caught up with
         env:
           GH_TOKEN: ${{ github.token }}
@@ -72,7 +98,8 @@ jobs:
         run: |
           set -euo pipefail
           # The title is tools/upstream_sync.py's ISSUE_TITLE, which CI's upstream-failed job uses.
-          gh issue list --repo "$REPO" --state open --limit 100 --json number,title \
+          gh issue list --repo "$REPO" --state open --author app/github-actions --limit 100 \
+            --json number,title \
             --search 'in:title "could not be pulled in automatically"' \
             | python3 tools/upstream_sync.py resolved --current "$CURRENT" \
             | while read -r number; do

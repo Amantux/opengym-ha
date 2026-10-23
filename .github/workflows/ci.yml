@@ -402,7 +402,16 @@ jobs:
           # When main moved past this commit while CI ran (a second push waits in
           # the concurrency group), the push is rejected, and the newer push's own
           # run bumps and releases a tree that includes this commit: not a failure.
-          if git push origin "HEAD:${BRANCH}"; then
+          # A lease rather than a plain push: main must still be the commit this job built on (the
+          # tested commit on a push run, the main it checked out on a dispatched one). A plain push
+          # also goes through when main was reset to an older commit meanwhile, and brings back what
+          # the reset removed.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            expected=$(git rev-parse HEAD~2)
+          else
+            expected=$GITHUB_SHA
+          fi
+          if git push --force-with-lease="${BRANCH}:${expected}" origin "HEAD:${BRANCH}"; then
             echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -489,9 +498,11 @@ jobs:
                "one. Re-run this job, or create the release manually." >&2
           exit 1
 
-  # An Upstream sync run that did not land: say so where it will be seen. Its failure email goes
-  # to the bot that dispatched it, not to a person. One open issue per release, commented on by
-  # each later attempt; the Upstream sync workflow closes it once main pins that release.
+  # An Upstream sync run that did not land, or landed but could not be released: say so where it
+  # will be seen. Its failure email goes to the bot that dispatched it, not to a person. One open
+  # issue per release, commented on by each later attempt; the Upstream sync workflow closes a
+  # "could not be pulled in" issue once main pins that release. A run that ends without failing
+  # (cancelled, timed out) is reported by the Upstream sync workflow's next check instead.
   upstream-failed:
     name: Report an upstream release that could not land
     if: >
@@ -511,16 +522,32 @@ jobs:
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RESULTS: ${{ toJSON(needs) }}
+          BUMP_SHA: ${{ needs.bump-version.outputs.bump_sha }}
         run: |
           set -euo pipefail
           version=${REF_NAME#upstream/opengym-}
           if ! printf '%s' "$version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "::error::unexpected branch ${REF_NAME}"; exit 1
           fi
-          # tools/upstream_sync.py ISSUE_TITLE: the Upstream sync workflow closes it by this title.
-          title="openGym ${version} could not be pulled in automatically"
           jobs=$(printf '%s' "$RESULTS" | jq -r 'to_entries[] | "- \(.key): \(.value.result)"')
-          body=$(cat <<EOF
+          if [ -n "$BUMP_SHA" ]; then
+            # It landed: main has it and its version bump (${BUMP_SHA}); only the release failed. A
+            # title of its own, which the Upstream sync workflow never closes (main pins it already).
+            title="openGym ${version} landed, but its GitHub release could not be made"
+            body=$(cat <<EOF
+          Upstream openGym [${version}](https://github.com/DuarteSantos8/openGym/releases/tag/v${version}) passed every test and is on main with its version bump (${BUMP_SHA}), but the GitHub release could not be created. The add-on store already offers it; HACS offers only the latest GitHub release, so the integration's users do not get this version until the release exists.
+
+          Run: ${RUN_URL}
+
+          ${jobs}
+
+          Re-run the failed job, or create the release by hand at ${BUMP_SHA}, then close this issue.
+          EOF
+            )
+          else
+            # tools/upstream_sync.py ISSUE_TITLE: the Upstream sync workflow closes it by this title.
+            title="openGym ${version} could not be pulled in automatically"
+            body=$(cat <<EOF
           Upstream openGym [${version}](https://github.com/DuarteSantos8/openGym/releases/tag/v${version}) was tested on \`${REF_NAME}\` (${SHA}) and did not land, so users stay on the release main pins.
 
           Run: ${RUN_URL}
@@ -529,8 +556,10 @@ jobs:
 
           The usual cause is the patch (\`opengym/patches/\`) no longer applying to upstream's \`api/server.js\`, or upstream changing something the gateway relies on. Fix it on main: any change on main makes the next Upstream sync run try ${version} again, and this issue closes itself once main pins it. A fix that has to pin ${version} by hand works too.
           EOF
-          )
-          existing=$(gh issue list --repo "$REPO" --state open --limit 100 --json number,title \
+            )
+          fi
+          # Only the bot's own issues: anyone can open one with this title.
+          existing=$(gh issue list --repo "$REPO" --state open --author app/github-actions --limit 100 --json number,title \
             --search "in:title \"${title}\"" | jq -r --arg t "$title" '.[] | select(.title == $t) | .number' | head -n 1)
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "$REPO" --body "$body"

