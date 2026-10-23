@@ -359,10 +359,21 @@ them and the changelog). Every Supervisor passes
   polls hourly and pushes `upstream/opengym-X.Y.Z`; CI runs every job on it, and bump-version
   lands it on main with the version bump only if all pass and main's own
   `upstream_sync.py landable` finds it is exactly that commit. A failure opens an issue and lands
-  nothing. Trust: a new upstream release reaches users without review; what limits it is the
-  privilege model (§1: uid 1000, no `SUPERVISOR_TOKEN`, the AppArmor fence) and the
-  Supervisor's backup before an update. Only releases are followed, never `edge`, and never a
-  digest re-published under the pinned version.
+  nothing. Trust: a new upstream release reaches users without review, and two kinds of upstream
+  code arrive with it:
+  - **upstream's app** (the api's JavaScript, the SPA, the nginx template) is held by the
+    privilege model (§1): uid 1000, no `SUPERVISOR_TOKEN`, the AppArmor `//app` fence around
+    `/homeassistant`;
+  - **upstream's image** is the add-on's base, and nothing holds it. The entrypoint is root on
+    upstream's `/bin/sh` and busybox. The time-zone lookup and Supervisor discovery run upstream's
+    `node` binary as root with `SUPERVISOR_TOKEN`. With `install_integration` on, that root shell writes into
+    `/homeassistant`. A malicious image therefore gets root and that token, inside the
+    `opengym` AppArmor profile and the container.
+
+  A review step would add little against the second: nobody audits image layers in a bump PR.
+  Closing it means building `FROM` a base this repo chooses and copying only upstream's app
+  files in. Only releases are followed, never `edge`, and never a digest re-published under the
+  pinned version. The Supervisor takes a backup before an update.
 - **Uploads:** streamed (§6 step 6) rather than capping openGym's own limits. A cap would have
   applied to direct access too (it is the api's own setting). `ingress_stream` streams only
   `POST`, hence the method tunnel; it is ingress-only and limited to the one media route.

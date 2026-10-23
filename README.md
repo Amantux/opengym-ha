@@ -184,7 +184,8 @@ changelog line. It then runs CI on that branch, which lands it on `main` and rel
 every job passes. If something fails, usually the patch no longer applying, CI opens an issue
 and `main` is untouched. A fix on `main` retries that release at the next hourly run, and the
 issue closes once `main` pins it. GitHub disables a public repository's schedules after 60 days
-with no activity: if that happens, re-enable the workflow under *Actions*.
+with no activity: if that happens, re-enable the workflow under *Actions*. Landing a release
+unreviewed trusts upstream's images; `docs/contract.md` §11 says how far.
 
 **Pending external step:** registering the `opengym` domain in
 [home-assistant/brands](https://github.com/home-assistant/brands). Until then the HACS check
