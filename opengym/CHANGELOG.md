@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Maintenance release; no user-visible change.
+
 ## 0.1.2
 
 - New openGym releases now reach the add-on on their own: each is tested against everything the
