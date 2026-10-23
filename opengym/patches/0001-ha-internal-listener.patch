@@ -1,6 +1,6 @@
 --- a/server.js
 +++ b/server.js
-@@ -2702,8 +2702,114 @@
+@@ -2702,8 +2702,116 @@
  // every other route's body still has to arrive within five minutes (bodyDeadline above).
  server.requestTimeout = 30 * 60000;
  server.headersTimeout = 60000;
@@ -33,13 +33,15 @@
 +// own sign(): the payload is `uid:exp:sv`, and from openGym 1.4.2 `uid:exp:sv:kind`. It is asked
 +// for as a cookie (`c`), a browser's kind, which upstream never renews into a long session and
 +// never takes for a paired phone; a release whose makeSession takes no kind ignores the argument.
-+// A payload of any other shape (another field count, a uid or exp that is not what was asked for)
-+// is refused, a 500 to the gateway, which then signs no one in, rather than re-signed into
-+// something upstream would read differently.
++// A payload of any other shape (another field count, a kind other than a cookie's, a uid or exp
++// that is not what was asked for) is refused, a 500 to the gateway, which then signs no one in,
++// rather than re-signed into something upstream would read differently: a release that stopped
++// honouring the 'c' would otherwise have this hand out a phone's renewable token.
 +function haSession(user) {
 +  const token = makeSession(user, 'c');
 +  const fields = token.slice(0, token.lastIndexOf('.')).split(':');
-+  if ((fields.length !== 3 && fields.length !== 4) || fields[0] !== user.id || !/^[0-9]+$/.test(fields[1])) {
++  const kindOk = fields.length === 3 || (fields.length === 4 && fields[3] === 'c');
++  if (!kindOk || fields[0] !== user.id || !/^[0-9]+$/.test(fields[1])) {
 +    throw new Error('makeSession returned a token this patch does not know');
 +  }
 +  fields[1] = String(Date.now() + HA_SESSION_MS);
