@@ -130,11 +130,11 @@ class AddonConfig(LintCase):
 
 class BuildPins(LintCase):
     def test_build_files_are_rejected(self):
-        # Deprecated by the Supervisor (2026.04), and a second api pin Dependabot cannot bump.
+        # Deprecated by the Supervisor (2026.04), and a second api pin Upstream sync never moves.
         for name in ("build.yaml", "build.yml", "build.json"):
             with self.subTest(name=name):
                 path = fixtures.write(self.root, f"opengym/{name}", f"build_from:\n  amd64: {fixtures.API}\n")
-                problem = self.assert_only(f"opengym/{name}", "exists", "deprecated", "Dependabot")
+                problem = self.assert_only(f"opengym/{name}", "exists", "deprecated", "Upstream sync")
                 self.assertIn("delete it", problem.fix)
                 path.unlink()
 
@@ -156,7 +156,7 @@ class BuildPins(LintCase):
         self.edit("opengym/Dockerfile", f"FROM {fixtures.API}\n",
                   f"FROM {fixtures.API} AS api\nFROM node:22-alpine\n")
         problem = self.assert_only("opengym/Dockerfile", "the final stage is built FROM node:22-alpine")
-        self.assertIn("Dependabot only bumps an image that a FROM line names", problem.fix)
+        self.assertIn("Upstream sync only moves an image that a FROM line names", problem.fix)
 
     def test_api_and_web_tags_must_match(self):
         self.edit("opengym/Dockerfile", "opengym-web:1.4.1@", "opengym-web:1.5.0@")

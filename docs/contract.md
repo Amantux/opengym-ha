@@ -3,14 +3,16 @@
 The single source of truth every component is built against. If code and this file disagree,
 this file wins until it is deliberately changed (and every consumer updated in the same commit).
 
-Upstream pin: **openGym v1.4.1**
-- `ghcr.io/duartesantos8/opengym-api:1.4.1@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b`
-- `ghcr.io/duartesantos8/opengym-web:1.4.1@sha256:e32cae9d2f4aad0c5e1b7888c9bfc712b2306ddfe3c65bc4cfefd4b0002e86d3`
+Upstream pin: the openGym release in `opengym/Dockerfile`, as
+`ghcr.io/duartesantos8/opengym-{web,api}:<version>@sha256:<multi-arch index digest>` and
+`OPENGYM_VERSION=<version>` (`python3 tools/addon_lint.py --upstream-version` prints it). It is
+deliberately not repeated here: the Upstream sync workflow moves it on every upstream release.
 
-Both are pinned only in `opengym/Dockerfile`'s `FROM` lines (the final stage is `FROM` the api
-image directly). There is no `build.yaml` (deprecated since Supervisor 2026.04) and no
+Both images are pinned only in `opengym/Dockerfile`'s `FROM` lines (the final stage is `FROM` the
+api image directly). There is no `build.yaml` (deprecated since Supervisor 2026.04) and no
 `ARG BUILD_FROM`: an older Supervisor passes `BUILD_FROM=<HA base image>`, which goes unused.
-A Dependabot upstream bump needs one hand edit, `OPENGYM_VERSION` in the Dockerfile.
+An Upstream sync commit changes exactly those two lines, `OPENGYM_VERSION` and one changelog
+line (`tools/upstream_sync.py`); CI lands it on main only if every job passes on it (§11).
 
 ## 1. Processes, ports, users
 
@@ -89,7 +91,7 @@ with `NGINX_PORT=127.0.0.1:8080 BACKEND=127.0.0.1 PORT=3000 RESOLVER=127.0.0.11 
 `OPENGYM_OPTIONS_FILE=/data/options.json` `UPSTREAM_API_URL=http://127.0.0.1:3000`
 `UPSTREAM_WEB_URL=http://127.0.0.1:8080` `UPSTREAM_API_DIR=/app`
 `HA_INTERNAL_SOCKET=/run/opengym/internal.sock` `OPENGYM_HA_VERSION=<add-on version>`
-`OPENGYM_VERSION=1.4.1`
+`OPENGYM_VERSION=<the pinned upstream release>`
 
 The gateway never reads `db.json` or `secret`: users and sessions come from upstream's own
 in-memory state over the internal socket, so `sv` bumps ("sign out everywhere"), disables and
@@ -222,7 +224,7 @@ Auth: `Authorization: Bearer <integration token>` compared in constant time; mis
 `401 {"error":"unauthorized"}`. Errors are curated strings — never an upstream body or `str(exc)`.
 
 ### `GET /ha/v1/health` (no auth)
-`200 {"ok": true, "version": "<add-on version>", "opengym_version": "1.4.1"}`
+`200 {"ok": true, "version": "<add-on version>", "opengym_version": "<upstream release>"}`
 
 ### `GET /ha/v1/profiles`
 `200 {"profiles": [{"id": "…", "name": "Alex", "admin": true}]}` — every user in `db.json`
@@ -353,6 +355,14 @@ them and the changelog). Every Supervisor passes
   is the alternative the owner chose, with an AppArmor fence: the config-folder mount cannot be
   made conditional on the option, so the servers are confined away from it instead, and the
   protection exists only while AppArmor enforces the profile (documented, and logged when not).
+- **Upstream releases land unattended** (the owner's choice over a PR to merge). Upstream sync
+  polls hourly and pushes `upstream/opengym-X.Y.Z`; CI runs every job on it, and bump-version
+  lands it on main with the version bump only if all pass and main's own
+  `upstream_sync.py landable` finds it is exactly that commit. A failure opens an issue and lands
+  nothing. Trust: a new upstream release reaches users without review; what limits it is the
+  privilege model (§1: uid 1000, no `SUPERVISOR_TOKEN`, the AppArmor fence) and the
+  Supervisor's backup before an update. Only releases are followed, never `edge`, and never a
+  digest re-published under the pinned version.
 - **Uploads:** streamed (§6 step 6) rather than capping openGym's own limits. A cap would have
   applied to direct access too (it is the api's own setting). `ingress_stream` streams only
   `POST`, hence the method tunnel; it is ingress-only and limited to the one media route.

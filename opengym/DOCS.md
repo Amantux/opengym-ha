@@ -250,6 +250,16 @@ admin turns it on in **Admin dashboard → AI Coach**.
 
 Provider API keys are stored with your data, encrypted with the add-on's own secret.
 
+## Updates
+
+Each new openGym release reaches this add-on on its own. Within the hour, the add-on's
+repository tests the release against everything the add-on relies on and, if it passes,
+publishes it as the add-on's next version. The Changelog tab names the openGym release and
+links to what is new in it. Home Assistant shows the update within about three hours, and
+updating rebuilds the add-on on your machine from that release. Turn on **Auto update** above
+to have it happen unattended: Home Assistant then installs a version once it is a day old,
+after taking a backup.
+
 ## Backups and where your data lives
 
 Everything openGym keeps is in the add-on's own data folder, which Home Assistant backups

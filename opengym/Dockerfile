@@ -4,9 +4,10 @@
 # the official upstream images pinned by digest. The exercise media bundled in the web image
 # is licensed to openGym only, so this repository never publishes an image that carries it.
 #
-# Both upstream images are named in plain FROM lines, so Dependabot bumps them together (one
-# PR per upstream release; OPENGYM_VERSION below is its one hand edit). Each digest is a
-# multi-arch index (linux/amd64 and linux/arm64), so one reference serves both add-on archs.
+# Both upstream images are named in plain FROM lines, which the Upstream sync workflow moves
+# together with OPENGYM_VERSION below on each upstream release (tools/upstream_sync.py; nothing
+# else in this file may change in that commit). Each digest is a multi-arch index (linux/amd64
+# and linux/arm64), so one reference serves both add-on archs.
 # There is no build.yaml and no ARG BUILD_FROM, on purpose: the Supervisor deprecated
 # build.yaml in 2026.04, and an older Supervisor that finds no build.yaml passes
 # BUILD_FROM=<Home Assistant's own base image>, which would replace an ARG's default. With no

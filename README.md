@@ -71,6 +71,13 @@ caveats (sign-out under ingress, no offline mode under ingress).
    installed). Restart Home Assistant when the add-on log says so, then accept the discovered
    openGym as above. The add-on's Documentation tab explains what that option can reach.
 
+**Updates.** Each new openGym release reaches the add-on on its own. Within the hour, this
+repository tests it against everything the add-on relies on and, if it passes, releases it as
+the add-on's next version. Home Assistant shows the update within about three hours, and
+updating rebuilds the add-on on your machine from the new release. To have that happen
+unattended, turn on **Auto update** on the add-on's page: Home Assistant then installs a
+version once it is a day old, after taking a backup.
+
 ## openGym's own guides and exercise library
 
 Everything inside the app is upstream openGym, so its own documentation applies as is:
@@ -98,7 +105,7 @@ Everything inside the app is upstream openGym, so its own documentation applies 
                                                 nginx  127.0.0.1:8080  (upstream's config: SPA + media)
                                                   │  /api/*
                                                   ▼
-                                                openGym api  127.0.0.1:3000  (upstream 1.4.1 + one patch)
+                                                openGym api  127.0.0.1:3000  (the pinned upstream release + one patch)
                                                   ▲
                          gateway ─────────────────┘  internal unix socket /run/opengym/internal.sock
                                                      (profiles and sessions; nginx has no route to it)
@@ -169,6 +176,15 @@ commit **subject** bumps that instead), keeps `opengym/config.yaml`,
 `custom_components/opengym/manifest.json` and `opengym/CHANGELOG.md` in step, and cuts a GitHub
 release, which is what HACS offers as an update. A PR that changes shipped code adds its notes
 under `## Unreleased` in `opengym/CHANGELOG.md`.
+
+New upstream openGym releases need no one. The *Upstream sync* workflow
+(`.github/workflows/upstream-sync.yml`, `tools/upstream_sync.py`) checks hourly and pushes
+`upstream/opengym-X.Y.Z`: one commit pinning both images by digest, `OPENGYM_VERSION` and a
+changelog line. It then runs CI on that branch, which lands it on `main` and releases it if
+every job passes. If something fails, usually the patch no longer applying, CI opens an issue
+and `main` is untouched. A fix on `main` retries that release at the next hourly run, and the
+issue closes once `main` pins it. GitHub disables a public repository's schedules after 60 days
+with no activity: if that happens, re-enable the workflow under *Actions*.
 
 **Pending external step:** registering the `opengym` domain in
 [home-assistant/brands](https://github.com/home-assistant/brands). Until then the HACS check

@@ -10,25 +10,11 @@ updates:
       actions:
         patterns: ["*"]
 
-  # The upstream openGym images the add-on is built FROM (opengym/Dockerfile).
-  # Both are plain `FROM image:tag@sha256:digest` lines: Dependabot's Docker
-  # parser looks only at FROM lines, so an image named only in an ARG default
-  # (or in a build.yaml, which is gone) is never bumped. One PR updates both.
-  # Grouped WITHOUT an update-types filter, majors included, on purpose: the api
-  # and web images are one upstream release and must carry the same tag
-  # (tools/addon_lint.py enforces it), so one PR per upstream release is the
-  # reviewable unit — split PRs would each be red on their own.
-  # One thing a bump PR needs by hand (CI says so if forgotten): set
-  # OPENGYM_VERSION in the Dockerfile to the new tag.
-  # CI then checks the patch and the gateway against that upstream release's
-  # source automatically (the checkout ref is derived from these tags).
-  - package-ecosystem: "docker"
-    directory: "/opengym"
-    schedule:
-      interval: "weekly"
-    groups:
-      opengym-upstream:
-        patterns: ["*"]
+  # No "docker" entry, on purpose. The only images in opengym/Dockerfile are the
+  # two upstream openGym ones, and the Upstream sync workflow
+  # (.github/workflows/upstream-sync.yml) moves them hourly, together with
+  # OPENGYM_VERSION and a changelog line, then lands them once CI passes.
+  # Dependabot would open a second, half-done PR for every upstream release.
 
   # HA integration test harness (the `latest` leg of CI's ha-tests). Each harness
   # release pins one exact homeassistant, so a bump here is how a new HA reaches

@@ -45,7 +45,7 @@ jobs:
       - name: Upstream release the add-on ships
         id: upstream
         # The one source of truth is the image tags in opengym/Dockerfile's FROM
-        # lines, so a Dependabot bump of the images re-runs this suite against
+        # lines, so an Upstream sync bump of the images re-runs this suite against
         # the matching upstream source with no second pin to forget.
         # Fails (and says why) if the api and web images disagree. Standard
         # library only: no venv exists yet.
@@ -235,10 +235,10 @@ jobs:
     # Dependency-manifest-only changes (Dependabot) and test-only changes are
     # exempt; other PRs that touch shipped paths without a user-visible change
     # opt out with the `skip-changelog` label (added after the PR opened? re-run
-    # this job to pick it up). A Dependabot bump of the upstream images
+    # this job to pick it up). A PR that moves the upstream images by hand
     # (opengym/Dockerfile) is deliberately NOT exempt: a new openGym release is
-    # the most user-visible change this add-on has, and that PR needs a hand
-    # edit anyway (OPENGYM_VERSION).
+    # the most user-visible change this add-on has. (Upstream sync's own commits
+    # never open a PR: they bring their changelog line with them.)
     name: Changelog entry
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

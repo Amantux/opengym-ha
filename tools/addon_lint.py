@@ -117,7 +117,7 @@ def upstream_version(root: Path, problems: list[Problem]) -> str | None:
     """Return the openGym release both upstream images carry, or None with problems appended.
 
     CI checks the upstream source out at this release, so the gateway and patch suites always
-    test the code the image actually ships; a Dependabot image bump moves both together.
+    test the code the image actually ships; an Upstream sync bump moves both together.
     """
     found: list[Problem] = []
     text = _read(root, DOCKERFILE, found)
@@ -294,7 +294,7 @@ def check_build(root: Path, problems: list[Problem]) -> None:
                 "exists",
                 "delete it and keep every build setting in the Dockerfile. The Supervisor "
                 "deprecated build files in 2026.04 and warns about them on every build, and a "
-                "build_from there is a second pin of the api image that Dependabot cannot bump",
+                "build_from there is a second pin of the api image that Upstream sync never moves",
             ))
     dockerfile = _read(root, DOCKERFILE, problems)
     if dockerfile is None:
@@ -316,8 +316,8 @@ def check_build(root: Path, problems: list[Problem]) -> None:
             DOCKERFILE,
             f"the final stage is built FROM {final or '<no FROM line>'}",
             "build it FROM ghcr.io/duartesantos8/opengym-api:<version>@sha256:<digest> "
-            "directly: the add-on runs upstream's api, and Dependabot only bumps an image that "
-            "a FROM line names",
+            "directly: the add-on runs upstream's api, and Upstream sync only moves an image "
+            "that a FROM line names",
         ))
 
 
