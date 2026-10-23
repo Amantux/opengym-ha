@@ -135,7 +135,9 @@ CLI (`node /opt/gateway/src/cli.js <cmd>`):
 
 Started only when `HA_INTERNAL_SOCKET` is set: unlink a stale socket file, `listen(path)`,
 `chmod 0600`. Separate route table; nothing here is reachable over TCP. JSON in/out, upstream's
-`readBody`/`json` helpers. Also: `server.listen(PORT, process.env.HOST || undefined)`.
+`readBody`/`json` helpers. Also: `server.listen(PORT, process.env.HOST || undefined)`. The patch
+only appends to the end of `server.js` (one hunk, `--fuzz=0`), so it keeps applying as upstream
+changes the code above it: verified on 1.4.1 and 1.4.2.
 
 ### `POST /internal/ha-session` `{"ha_user_id": string, "name": string}`
 - `ha_user_id` must match `^[A-Za-z0-9_-]{1,128}$` else `400`. `name` trimmed, sliced to 40
@@ -147,11 +149,14 @@ Started only when `HA_INTERNAL_SOCKET` is set: unlink a stale socket file, `list
   {user, msg: 'ha-ingress'})`. **No `await` between find and `saveDb`** (two concurrent calls
   must yield one profile). Invites not consulted. Disabled users are never re-enabled.
 - `200 {"user": {"id","name","admin","disabled"}, "created": bool, "token": string|null}` —
-  `token` is upstream's own signed session payload `uid:exp:sv` with `exp = now + 60 s`
-  (`null` when disabled).
+  `token` is upstream's own session (`null` when disabled): `makeSession(user, 'c')`, with `exp`
+  moved to now + 60 s and the payload re-signed by upstream's `sign()`. The payload is
+  `uid:exp:sv`, or from 1.4.2 `uid:exp:sv:kind`. Kind `c` is a browser cookie's, which upstream
+  never renews and never treats as a paired phone; 1.4.1 has no kinds and ignores the argument.
+  A payload of any other shape is a `500`, never a guess.
 
 ### `POST /internal/session` `{"uid": string}`
-For integration writes. `200 {"token": string}` (60 s) for an existing, non-disabled user;
+For integration writes. `200 {"token": string}` (60 s, minted as above) for an existing, non-disabled user;
 `404 {"error":"unknown profile"}` otherwise.
 
 ### `GET /internal/users`

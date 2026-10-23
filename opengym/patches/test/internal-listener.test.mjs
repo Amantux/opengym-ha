@@ -122,15 +122,22 @@ async function start(t, { env = {}, users = [], dir } = {}) {
   return h;
 }
 
-/* A token is upstream's `<uid>:<exp>:<sv>.<HMAC-SHA256(secret, payload), base64url>`. Checked
-   here with the test's own secret, so "upstream's own signing" is asserted, not assumed. */
+/* A token is upstream's `<uid>:<exp>:<sv>.<HMAC-SHA256(secret, payload), base64url>`, and from
+   openGym 1.4.2 `<uid>:<exp>:<sv>:<kind>.<…>`. Checked here with the test's own secret, so
+   "upstream's own signing" is asserted, not assumed. */
 function decode(token) {
   const i = token.lastIndexOf('.');
   const payload = token.slice(0, i);
   assert.equal(token.slice(i + 1), crypto.createHmac('sha256', SECRET).update(payload).digest('base64url'), 'signed with DATA_DIR/secret');
-  const [uid, exp, sv] = payload.split(':');
-  return { uid, exp: +exp, sv: +sv };
+  const fields = payload.split(':');
+  assert.ok(fields.length === 3 || fields.length === 4, `payload ${payload}`);
+  const [uid, exp, sv, kind] = fields;
+  return { uid, exp: +exp, sv: +sv, kind };
 }
+
+/* What every token the internal listener hands out must be: a browser cookie's kind (`c`) where the
+   release has kinds, never a paired phone's (`b`), which upstream renews and trusts as a device. */
+const assertCookieKind = tok => assert.ok(tok.kind === undefined || tok.kind === 'c', `kind ${tok.kind}`);
 
 /* Filesystem paths of the unix sockets the process has bound: its socket fds, looked up by inode
    in /proc/net/unix (whose last column is the path, present only for a socket bound to one). */
@@ -212,9 +219,12 @@ test('ha-session makes a profile tagged with the HA id, and its token is an upst
   const tok = decode(r.body.token);
   assert.equal(tok.uid, r.body.user.id);
   assert.equal(tok.sv, 0);
+  assertCookieKind(tok);
   const me = await h.me(r.body.token);
   assert.equal(me.status, 200);
-  assert.deepEqual(me.body.user, { id: r.body.user.id, name: 'Alex', admin: true });
+  // The fields this add-on relies on; upstream adds others over time (1.4.2: owner).
+  const { id, name, admin } = me.body.user;
+  assert.deepEqual({ id, name, admin }, { id: r.body.user.id, name: 'Alex', admin: true });
 
   const rows = h.audit().filter(e => e.uid === r.body.user.id);
   const reg = rows.find(e => e.ev === 'auth.register.ok');
@@ -224,24 +234,30 @@ test('ha-session makes a profile tagged with the HA id, and its token is an upst
   assert.ok(rows.some(e => e.ev === 'admin.first-user'));
 });
 
-test('a token lives about 60 s and is only renewed as a Bearer, never as the cookie the gateway sets', async t => {
+test('a token lives about 60 s and is never renewed as the cookie the gateway sets', async t => {
   const h = await start(t);
   const before = Date.now();
   const r = await h.haSession('ttl-check', 'Timer');
   const after = Date.now();
-  const { exp } = decode(r.body.token);
-  assert.ok(exp >= before + 60000 && exp <= after + 60000, `exp ${exp - before} ms after the call`);
+  const tok = decode(r.body.token);
+  assert.ok(tok.exp >= before + 60000 && tok.exp <= after + 60000, `exp ${tok.exp - before} ms after the call`);
+  assertCookieKind(tok);
 
-  // GET /api/me renews a Bearer token past half its life. As a cookie it is left alone, which
-  // is why the gateway injects a cookie and never a Bearer. The renewal also shows makeSession's
-  // default is untouched: what it hands out is a full SESSION_DAYS (90) session.
+  // GET /api/me renews a Bearer token past half its life, and never a cookie, which is why the
+  // gateway injects a cookie and never a Bearer. Up to openGym 1.4.1 every token renews as a
+  // Bearer, into a full SESSION_DAYS (90) session, which shows makeSession's default untouched.
+  // From 1.4.2 a token made as a cookie (kind `c`) is not renewed as a Bearer either.
   const asCookie = await h.me(r.body.token);
   assert.equal(asCookie.status, 200);
   assert.equal('token' in asCookie.body, false);
   const asBearer = await h.tcp('GET', '/api/me', { headers: { Authorization: `Bearer ${r.body.token}` } });
   assert.equal(asBearer.status, 200);
-  const renewed = decode(asBearer.body.token).exp - Date.now();
-  assert.ok(Math.abs(renewed - 90 * 86400000) < 60000, `renewed for ${renewed} ms`);
+  if (tok.kind === 'c') {
+    assert.equal('token' in asBearer.body, false, 'a cookie-kind token is renewed as a Bearer');
+  } else {
+    const renewed = decode(asBearer.body.token).exp - Date.now();
+    assert.ok(Math.abs(renewed - 90 * 86400000) < 60000, `renewed for ${renewed} ms`);
+  }
 });
 
 test('the token works as the plain gymsid cookie the gateway sets, with an https ORIGIN too', async t => {
@@ -355,9 +371,10 @@ test('/internal/session: an existing profile gets a working 60 s token; unknown 
   const ok = await h.internal('POST', '/internal/session', { uid: 'live-user' });
   assert.equal(ok.status, 200);
   assert.deepEqual(Object.keys(ok.body), ['token']);
-  const { uid, exp } = decode(ok.body.token);
-  assert.equal(uid, 'live-user');
-  assert.ok(exp >= before + 60000 && exp <= Date.now() + 60000);
+  const tok = decode(ok.body.token);
+  assert.equal(tok.uid, 'live-user');
+  assert.ok(tok.exp >= before + 60000 && tok.exp <= Date.now() + 60000);
+  assertCookieKind(tok);
   assert.equal((await h.me(ok.body.token)).body.user.id, 'live-user');
 
   for (const body of [{ uid: 'locked-user' }, { uid: 'nobody' }, { uid: '' }, {}, { uid: { id: 'live-user' } }, { uid: ['live-user'] }]) {

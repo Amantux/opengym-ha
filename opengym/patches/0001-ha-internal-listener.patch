@@ -1,19 +1,6 @@
 --- a/server.js
 +++ b/server.js
-@@ -550,8 +550,10 @@
- // signing out the whole instance. Cookies minted before `sv` existed have no third field and are
- // read as version 0, matching a user who has never bumped — they stay valid until they expire.
- const sessionVersion = user => user.sv || 0;
--function makeSession(user) {
--  const exp = Date.now() + SESSION_DAYS * 86400000;
-+// `ttlMs` is only ever passed by the Home Assistant add-on's internal listener (end of this file),
-+// whose gateway is handed a one-minute session per request. Everyone else gets SESSION_DAYS.
-+function makeSession(user, ttlMs = SESSION_DAYS * 86400000) {
-+  const exp = Date.now() + ttlMs;
-   return sign(user.id + ':' + exp + ':' + sessionVersion(user));
- }
- // With the __Host- prefix the *browser* guarantees the cookie is host-only (no Domain attribute
-@@ -2702,8 +2704,95 @@
+@@ -2702,8 +2702,112 @@
  // every other route's body still has to arrive within five minutes (bodyDeadline above).
  server.requestTimeout = 30 * 60000;
  server.headersTimeout = 60000;
@@ -32,6 +19,8 @@
 +// The sessions are upstream's own (makeSession), so signing out everywhere, disabling and deleting
 +// a profile end them the way they end any other. They last a minute: the gateway asks again for
 +// every request, and a session that outlived the HA sign-in behind it would only be a liability.
++// makeSession itself is left as upstream wrote it (see haSession below), so this patch only ever
++// adds to the end of the file and keeps applying as upstream changes the code above.
 +//
 +// No socket peer address exists here (req.socket.remoteAddress is undefined), which is fine for
 +// the helpers reused below: readBody never reads it, and audit() then records no address (a header
@@ -39,6 +28,21 @@
 +const HA_SOCKET = process.env.HA_INTERNAL_SOCKET || '';
 +const HA_USER_ID = /^[A-Za-z0-9_-]{1,128}$/;
 +const HA_SESSION_MS = 60000;
++// makeSession's token with only its expiry moved to a minute from now, re-signed with upstream's
++// own sign(): the payload is `uid:exp:sv`, and from openGym 1.4.2 `uid:exp:sv:kind`. It is asked
++// for as a cookie (`c`), a browser's kind, which upstream never renews into a long session and
++// never takes for a paired phone; a release whose makeSession takes no kind ignores the argument.
++// A payload of any other shape is refused (a 500 to the gateway, which then signs no one in)
++// rather than re-signed into something upstream would read differently.
++function haSession(user) {
++  const token = makeSession(user, 'c');
++  const fields = token.slice(0, token.lastIndexOf('.')).split(':');
++  if (fields.length < 3 || fields[0] !== user.id || !/^[0-9]+$/.test(fields[1])) {
++    throw new Error('makeSession returned a token this patch does not know');
++  }
++  fields[1] = String(Date.now() + HA_SESSION_MS);
++  return sign(fields.join(':'));
++}
 +const internalUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u), disabled: !!u.disabled });
 +const internalRoutes = {
 +  // Find-or-create the profile of one HA user. Invites are not asked for: HA's owner already chose
@@ -64,14 +68,14 @@
 +    }
 +    // A disabled profile stays disabled and gets no session: an admin's lock is not the gateway's
 +    // to lift.
-+    json(res, 200, { user: internalUser(user), created, token: user.disabled ? null : makeSession(user, HA_SESSION_MS) });
++    json(res, 200, { user: internalUser(user), created, token: user.disabled ? null : haSession(user) });
 +  },
 +  // A session for a profile that already exists, for the add-on's integration API to write as it.
 +  'POST /internal/session': async (req, res) => {
 +    const body = await readBody(req);
 +    const user = typeof body.uid === 'string' ? db.users.find(u => u.id === body.uid) : null;
 +    if (!user || user.disabled) return json(res, 404, { error: 'unknown profile' });
-+    json(res, 200, { token: makeSession(user, HA_SESSION_MS) });
++    json(res, 200, { token: haSession(user) });
 +  },
 +  // From memory rather than db.json, so a sign-out, disable or delete counts the moment it happens.
 +  'GET /internal/users': async (req, res) => {
