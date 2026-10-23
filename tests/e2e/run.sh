@@ -148,6 +148,10 @@ fi
 # ---------------------------------------------------------------------------------------
 VERSION=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$REPO/opengym/config.yaml")
 [ -n "$VERSION" ] || die "no version in opengym/config.yaml"
+# The openGym release the image is built from: the tags in the Dockerfile's FROM lines, which
+# Upstream sync moves on each upstream release (standard library only, like in CI).
+OPENGYM_VERSION=$(python3 "$REPO/tools/addon_lint.py" --upstream-version) \
+  || die "could not read the upstream openGym version from opengym/Dockerfile"
 if [ "$BUILD" = 1 ]; then
   case "$(uname -m)" in
     x86_64) ARCH=amd64 ;;
@@ -186,8 +190,8 @@ EXTRA_PROFILES=0
 PHASE_OUT=""
 client_phase() {
   local rc=0
-  PHASE_OUT=$(docker exec -e TOKEN="$TOKEN" -e EXPECT_VERSION="$VERSION" -e EXPECT_A="$EXPECT_A" \
-    -e EXPECT_B="$EXPECT_B" -e EXTRA_PROFILES="$EXTRA_PROFILES" "$CLIENT" node /e2e/client.mjs "$1" 2>&1) || rc=$?
+  PHASE_OUT=$(docker exec -e TOKEN="$TOKEN" -e EXPECT_VERSION="$VERSION" -e EXPECT_OPENGYM_VERSION="$OPENGYM_VERSION" \
+    -e EXPECT_A="$EXPECT_A" -e EXPECT_B="$EXPECT_B" -e EXTRA_PROFILES="$EXTRA_PROFILES" "$CLIENT" node /e2e/client.mjs "$1" 2>&1) || rc=$?
   printf '%s\n' "$PHASE_OUT" | tee -a "$OUT/client.txt" | grep -v '^E2E_IDS ' || true
   local ok bad
   ok=$(printf '%s\n' "$PHASE_OUT" | grep -c '^ok - ' || true)

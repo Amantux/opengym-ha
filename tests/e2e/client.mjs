@@ -9,7 +9,7 @@
 //   node client.mjs external-url            restarted with external_url set
 //
 // Inputs (env): TOKEN (the integration token run.sh read from /data/gateway), EXPECT_VERSION,
-// and for the later phases EXPECT_A / EXPECT_B (profile ids the default phase printed).
+// EXPECT_OPENGYM_VERSION (the upstream release the Dockerfile pins), and for the later phases EXPECT_A / EXPECT_B (profile ids the default phase printed).
 // Output: one "ok - " / "not ok - " line per assertion; exit 1 if any failed.
 // Zero dependencies, node:http only, so every header sent is exactly the one written here.
 import http from 'node:http';
@@ -170,7 +170,7 @@ async function phaseDefault() {
   check('/healthz from a non-ingress peer: 200 with upstream\'s {ok, writable}', hz.status === 200 && hz.json?.ok === true && hz.json?.writable === true, hz.text);
   const h = await request('GET', `${ADDON}/ha/v1/health`);
   check('/ha/v1/health: no token needed, add-on and openGym versions', h.status === 200 && h.json?.ok === true
-    && h.json?.version === process.env.EXPECT_VERSION && h.json?.opengym_version === '1.4.1', h.text);
+    && h.json?.version === process.env.EXPECT_VERSION && h.json?.opengym_version === process.env.EXPECT_OPENGYM_VERSION, h.text);
 
   // --- the internal ports are not on the network ----------------------------------------------
   check('api port 3000 is not reachable from the network (bound to 127.0.0.1)', (await tcpProbe(ADDON_IP, 3000)) !== 'open');
