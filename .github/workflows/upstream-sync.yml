@@ -87,9 +87,11 @@ jobs:
             echo "Issue #${open} already says so."
             exit 0
           fi
+          # The report says what to do; closing the issue does not stop the next report, so it also
+          # says how to stop following upstream for a while.
           gh issue create --repo "$REPO" --title "$title" --body "${REPORT}.
 
-          Users stay on the release main pins. Fix it on main: any change on main makes the next Upstream sync run try ${VERSION} again, and this issue closes itself once main pins it."
+          This issue closes itself once main pins openGym ${VERSION}. To stop following upstream for a while, disable the Upstream sync workflow under Actions."
       - name: Close issues main has caught up with
         env:
           GH_TOKEN: ${{ github.token }}

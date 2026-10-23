@@ -60,7 +60,8 @@ ISSUE_TITLE_RE = re.compile(r"^openGym ([0-9]+\.[0-9]+\.[0-9]+) could not be pul
 # The only files a sync commit may touch.
 SYNC_FILES = (addon_lint.DOCKERFILE, bump_version.CHANGELOG)
 
-# [0-9], not \d: \d also matches other scripts' digits, which int() would read as a version.
+# [0-9], not \d: \d also matches other scripts' digits, which int() would read as a version. All
+# are used with fullmatch: `$` alone also matches before a trailing newline.
 TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
 VERSION = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -79,7 +80,7 @@ class SyncError(Exception):
 
 
 def parse_version(value: str) -> tuple[int, int, int]:
-    m = VERSION.match(value)
+    m = VERSION.fullmatch(value)
     if not m:
         raise SyncError(f"{value!r} is not a release version (X.Y.Z)")
     return int(m[1]), int(m[2]), int(m[3])
@@ -106,7 +107,7 @@ def rewrite_dockerfile(text: str, version: str, digests: dict[str, str]) -> str:
     """Point both upstream FROM lines and OPENGYM_VERSION at `version`; nothing else changes."""
     parse_version(version)
     for part in IMAGES:
-        if not DIGEST.match(digests.get(part, "")):
+        if not DIGEST.fullmatch(digests.get(part, "")):
             raise SyncError(f"opengym-{part}: {digests.get(part)!r} is not a sha256 digest")
     seen = {part: 0 for part in IMAGES}
     versions = 0
@@ -230,7 +231,7 @@ def latest_release(fetch: Fetch, token: str = "") -> tuple[str, float]:
     url = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
     data = _json(fetch(url, headers), url)
     tag = data.get("tag_name") if isinstance(data, dict) else None
-    m = TAG.match(tag) if isinstance(tag, str) else None
+    m = TAG.fullmatch(tag) if isinstance(tag, str) else None
     if not m or data.get("draft") or data.get("prerelease"):
         raise SyncError(f"upstream's latest release has an unexpected tag {tag!r}")
     published = data.get("published_at")
@@ -304,7 +305,7 @@ Run = dict[str, str]
 
 def ci_run(fetch: Fetch, token: str, repo: str, sha: str) -> Run | None:
     """The newest dispatched CI run on `sha` ({status, conclusion, url}), or None if none started."""
-    if not SHA.match(sha) or not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
+    if not SHA.fullmatch(sha) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise SyncError(f"cannot look up CI runs for {repo!r} at {sha!r}")
     headers = {"Accept": "application/vnd.github+json"}
     if token:
@@ -358,7 +359,8 @@ def check(root: Path, fetch: Fetch, token: str, tried: Callable[[str], tuple[str
                 # from CI already; a cancelled or timed-out run would otherwise say nothing at all.
                 out["reason"] = (f"CI on {branch} ended {run['conclusion'] or run['status']} "
                                  f"({run['url']}); a change on main tries it again")
-                out["report"] = out["reason"]
+                out["report"] = (f"{out['reason']}. Users stay on the release main pins. If CI found "
+                                 "a real incompatibility, fix it on main")
             return out
         # The branch exists but its dispatch never started a run: make it and dispatch again.
     digests = {part: index_digest(fetch, part, latest) for part in IMAGES}
@@ -370,7 +372,9 @@ def check(root: Path, fetch: Fetch, token: str, tried: Callable[[str], tuple[str
         hours = (now - published) / 3600
         if now - published > STALLED_AFTER:
             out["report"] = (f"openGym {latest} was released {hours:.0f} h ago, but "
-                             f"{', '.join(missing)} still does not serve linux/amd64 and linux/arm64")
+                             f"{', '.join(missing)} still does not serve linux/amd64 and linux/arm64. "
+                             "Nothing here needs fixing: each hourly run looks again and proposes it "
+                             "once upstream's images are complete")
         return out
     out.update(action="propose", api_digest=digests["api"], web_digest=digests["web"],
                subject=commit_subject(current, latest))
@@ -439,7 +443,7 @@ def resolved(issues: list[dict], current: str) -> list[int]:
     have = parse_version(current)
     numbers = []
     for issue in issues:
-        m = ISSUE_TITLE_RE.match(str(issue.get("title", "")))
+        m = ISSUE_TITLE_RE.fullmatch(str(issue.get("title", "")))
         if m and parse_version(m[1]) <= have:
             numbers.append(int(issue["number"]))
     return numbers

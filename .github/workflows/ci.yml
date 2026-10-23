@@ -501,12 +501,12 @@ jobs:
   # An Upstream sync run that did not land, or landed but could not be released: say so where it
   # will be seen. Its failure email goes to the bot that dispatched it, not to a person. One open
   # issue per release, commented on by each later attempt; the Upstream sync workflow closes a
-  # "could not be pulled in" issue once main pins that release. A run that ends without failing
-  # (cancelled, timed out) is reported by the Upstream sync workflow's next check instead.
+  # "could not be pulled in" issue once main pins that release. A cancelled run is reported too:
+  # after landing, nothing else would say its release is missing.
   upstream-failed:
     name: Report an upstream release that could not land
     if: >
-      failure() && github.event_name == 'workflow_dispatch' &&
+      (failure() || cancelled()) && github.event_name == 'workflow_dispatch' &&
       startsWith(github.ref, 'refs/heads/upstream/opengym-')
     needs: [gateway, patch, lint, ha-tests, smoke, bump-version, release]
     runs-on: ubuntu-latest
