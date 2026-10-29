@@ -40,7 +40,7 @@ jobs:
       # on the date shown (Dependabot moves it). The pin fixes the wrapper only:
       # it runs ghcr.io/home-assistant/hassfest at latest (read at this SHA),
       # which is the point — today's HA rules, run read-only.
-      - uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # master @ 2026-07-30
+      - uses: home-assistant/actions/hassfest@86d4564712fa02543c808e3a693dd04f9d3f8361 # master @ 2026-07-30
 
   hacs:
     name: HACS (integration installability)
@@ -74,7 +74,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Install the lint toolchain (venv)

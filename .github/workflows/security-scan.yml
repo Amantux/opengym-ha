@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           # `languages` (plural) is the input's name in init/action.yml at this
           # SHA. The singular `language` the sibling repos pass is not an input
@@ -52,7 +52,7 @@ jobs:
           # Query suite + path exclusions live in the config file, with the
           # reasoning for each narrowing recorded alongside them.
           config-file: ./.github/codeql/codeql-config.yml
-      - uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: "/language:${{ matrix.language }}"
 
@@ -135,7 +135,7 @@ jobs:
             --severity HIGH,CRITICAL --exit-code 0 .
       - name: Upload SARIF
         if: hashFiles('trivy.sarif') != ''
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy.sarif
           category: trivy-fs
@@ -192,7 +192,7 @@ jobs:
       # covers this repo's own manifests; the upstream images the Supervisor
       # builds from are openGym's to inventory.
       - continue-on-error: true
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: .
           format: spdx-json
