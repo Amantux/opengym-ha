@@ -80,7 +80,7 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 `RP_ID=$RESOLVED_RP_ID` `RP_NAME=openGym` `FIRST_USER_ADMIN=1` `TRUST_PROXY=1`
 `PASSWORD_LOGIN` `INVITE_ONLY` `ALLOW_GUEST` (each `1`/`0` from RESOLVED_*)
 `DEFAULT_LANG` (only exported when non-empty) `HA_INTERNAL_SOCKET=/run/opengym/internal.sock`
-`NODE_ENV=production`. Upstream's media limits are left at their defaults (videos 40 MB): big
+`NODE_ENV=production`. Upstream's media limits are left at their defaults (videos 100 MB as of openGym 1.4.5): big
 uploads stream through ingress (§6 step 6) instead of being capped.
 
 ### nginx template render (as root, before dropping privileges)

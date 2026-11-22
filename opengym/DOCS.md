@@ -283,7 +283,7 @@ openGym: **Settings → Data & backup**.
   Use **Disable account** (see [Signing out](#signing-out)).
 - **Passkeys cannot be created inside the Home Assistant panel**, and a profile made on the
   direct address cannot be joined to a Home Assistant profile.
-- **Photos and videos upload from the sidebar at openGym's usual sizes** (videos up to 40 MB).
+- **Photos and videos upload from the sidebar at openGym's usual sizes** (videos up to 100 MB).
   Home Assistant holds an ordinary upload in memory and refuses anything over 16 MiB, so the
   add-on streams uploads instead: a small script it adds to openGym's page sends them in the one
   form Home Assistant streams, and the add-on hands them to openGym unchanged. Nothing changes

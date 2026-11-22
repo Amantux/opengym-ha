@@ -183,7 +183,7 @@ async function phaseDefault() {
   check("ingress GET /: CSP frame-ancestors 'self'", /frame-ancestors 'self'/.test(index.headers['content-security-policy'] || ''), index.headers['content-security-policy']);
   // No add-on cap on videos: big uploads stream through ingress (checked below).
   const config = await viaIngress(A, 'GET', '/api/config');
-  check('ingress GET /api/config: media.videoMB is upstream\'s 40', config.status === 200 && config.json?.media?.videoMB === 40, `${config.status} ${config.text}`);
+  check('ingress GET /api/config: media.videoMB is upstream\'s 100', config.status === 200 && config.json?.media?.videoMB === 100, `${config.status} ${config.text}`);
   const asset = await viaIngress(A, 'GET', '/icon-512.png');
   check('ingress static asset: 200 image, SAMEORIGIN', asset.status === 200 && /image\/png/.test(asset.headers['content-type'] || '') && asset.headers['x-frame-options'] === 'SAMEORIGIN', `${asset.status} ${asset.headers['content-type']} ${asset.headers['x-frame-options']}`);
 
