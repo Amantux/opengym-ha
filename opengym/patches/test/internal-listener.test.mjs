@@ -173,6 +173,13 @@ function boundUnixPaths(pid) {
     .map(c => c[7]);
 }
 
+/* The unix sockets the patch is answerable for: every bound path except upstream's own. From openGym
+1.4.5 the server also binds an admin-recovery socket (recover.js / admin-socket.js) at
+<tmpdir>/opengym-admin-<uid>-<hash>/admin.sock whatever the patch does; it is matched by that exact
+shape, so a socket anywhere else, or one named otherwise, still fails the assertions below. */
+const UPSTREAM_ADMIN_SOCK = /^\/(?:tmp|var\/tmp)\/opengym-admin-[0-9]+-[0-9a-f]+\/admin\.sock$/;
+const patchSockets = pid => boundUnixPaths(pid).filter(p => !UPSTREAM_ADMIN_SOCK.test(p));
+
 /* Local addresses of every TCP socket in LISTEN state on `port` (/proc/net/tcp and tcp6, hex). */
 function listenAddresses(port) {
   const hexPort = port.toString(16).toUpperCase().padStart(4, '0');
@@ -206,12 +213,12 @@ test('the public TCP server gains no route: /internal/* and /api/internal/* answ
   // Nothing was made by any of that, and the socket does serve the same requests.
   assert.deepEqual((await h.internal('GET', '/internal/users')).body, { users: [] });
   assert.equal((await h.haSession('tcp-probe', 'Probe')).status, 200);
-  assert.deepEqual(boundUnixPaths(h.child.pid), [h.sock]);
+  assert.deepEqual(patchSockets(h.child.pid), [h.sock]);
 });
 
 test('with HA_INTERNAL_SOCKET unset no socket is made and the api still serves', async t => {
   const h = await start(t, { env: { HA_INTERNAL_SOCKET: undefined } });
-  assert.deepEqual(boundUnixPaths(h.child.pid), [], 'no unix socket bound to any path');
+  assert.deepEqual(patchSockets(h.child.pid), [], 'no unix socket bound to any path');
   assert.deepEqual(fs.readdirSync(h.run), []);
   assert.deepEqual(fs.readdirSync(h.data).filter(f => f.endsWith('.sock')), []);
   assert.equal((await h.tcp('GET', '/api/health')).status, 200);
