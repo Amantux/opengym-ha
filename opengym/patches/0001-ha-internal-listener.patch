@@ -1,6 +1,6 @@
 --- a/server.js
 +++ b/server.js
-@@ -2702,8 +2702,116 @@
+@@ -3780,11 +3780,119 @@
  // every other route's body still has to arrive within five minutes (bodyDeadline above).
  server.requestTimeout = 30 * 60000;
  server.headersTimeout = 60000;
@@ -119,3 +119,6 @@
 +// no other way to learn it. HOST narrows the bind to one address (the add-on puts the api on
 +// 127.0.0.1, behind its gateway); unset, it is every interface, as it always was.
 +server.listen(PORT, process.env.HOST || undefined, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
+ 
+ // The server's own command for a locked-out owner or admin (#584, recover.js): asked over a local
+ // socket only this process's user can open (admin-socket.js explains why not by editing db.json).
