@@ -6,4 +6,4 @@
 #
 # Venv only (the repo's .venv-ha), never a system interpreter: the harness pins
 # its own dependency set and will happily downgrade whatever else lives there.
-pytest-homeassistant-custom-component==0.13.371
+pytest-homeassistant-custom-component==0.13.375
