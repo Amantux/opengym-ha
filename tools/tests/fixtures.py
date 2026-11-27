@@ -18,6 +18,8 @@ API = ("ghcr.io/duartesantos8/opengym-api:1.4.1"
        "@sha256:4bc07fe7d1f05a57c0fa25da3563d54dfe27223506637d67fc64088a2a2f140b")
 WEB = ("ghcr.io/duartesantos8/opengym-web:1.4.1"
        "@sha256:e32cae9d2f4aad0c5e1b7888c9bfc712b2306ddfe3c65bc4cfefd4b0002e86d3")
+MCP = ("ghcr.io/duartesantos8/opengym-mcp:1.4.1"
+       "@sha256:8b1f2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9")
 
 CONFIG = """\
 name: openGym
@@ -44,11 +46,13 @@ DOCKERFILE = f"""\
 # Moved off ghcr.io/duartesantos8/opengym-web:1.3.0 in this commit; a reference in a comment
 # must never count as a pin.
 FROM {WEB} AS web
+FROM {MCP} AS mcp
 FROM {API}
 ARG BUILD_VERSION=dev
 ENV OPENGYM_HA_VERSION=${{BUILD_VERSION}} \\
     OPENGYM_VERSION=1.4.1
 COPY --from=web /usr/share/nginx/html /usr/share/nginx/html
+COPY --from=mcp /app /opt/opengym-mcp
 """
 
 TRANSLATIONS = """\

@@ -4,19 +4,20 @@ The single source of truth every component is built against. If code and this fi
 this file wins until it is deliberately changed (and every consumer updated in the same commit).
 
 Upstream pin: the openGym release in `opengym/Dockerfile`, as
-`ghcr.io/duartesantos8/opengym-{web,api}:<version>@sha256:<multi-arch index digest>` and
+`ghcr.io/duartesantos8/opengym-{web,api,mcp}:<version>@sha256:<multi-arch index digest>` and
 `OPENGYM_VERSION=<version>` (`python3 tools/addon_lint.py --upstream-version` prints it). It is
 deliberately not repeated here: the Upstream sync workflow moves it on every upstream release.
 
-Both images are pinned only in `opengym/Dockerfile`'s `FROM` lines (the final stage is `FROM` the
-api image directly). There is no `build.yaml` (deprecated since Supervisor 2026.04) and no
+All three images are pinned only in `opengym/Dockerfile`'s `FROM` lines (the final stage is
+`FROM` the api image directly; the web and mcp images are sources of files). There is no
+`build.yaml` (deprecated since Supervisor 2026.04) and no
 `ARG BUILD_FROM`: an older Supervisor passes `BUILD_FROM=<HA base image>`, which goes unused.
-An Upstream sync commit changes exactly those two lines, `OPENGYM_VERSION` and one changelog
+An Upstream sync commit changes exactly those three lines, `OPENGYM_VERSION` and one changelog
 line (`tools/upstream_sync.py`); CI lands it on main only if every job passes on it (§11).
 
 ## 1. Processes, ports, users
 
-All three server processes run as **`app` (uid 1000)** via `gosu`, `HOME=/home/app`.
+All four server processes run as **`app` (uid 1000)** via `gosu`, `HOME=/home/app`.
 `SUPERVISOR_TOKEN` is removed before `gosu` (`env -u SUPERVISOR_TOKEN gosu app …`), so no server
 ever has it in its environment. Supervisor discovery (`node /opt/gateway/src/cli.js discovery`)
 is not a server: under the Supervisor it runs as **root**, because any uid-1000 process can read
@@ -37,10 +38,14 @@ when `/proc/self/attr/current` is not `*opengym* (enforce)`.
 | gateway (`node /opt/gateway/src/server.js`) | `0.0.0.0:8099` — ingress port **and** the integration's direct port | ours |
 | nginx | `127.0.0.1:8080` | upstream template, our main `nginx.conf` |
 | api (`node /app/server.js`) | `127.0.0.1:3000` (`HOST` added by our patch) | upstream + patch |
+| mcp (`node /opt/opengym-mcp/mcp/src/http.js`) | `0.0.0.0:3100` (upstream binds no host; not published, and token-authenticated per request — §6.1) | upstream |
 
 Request path: client → gateway → nginx → api. The gateway talks **directly** to the api
 (`http://127.0.0.1:3000`) only for `/api/health` and `GET/PUT /api/data` on behalf of the
-integration, and to the api's **internal unix socket** (§5) for users and sessions.
+integration, and to the api's **internal unix socket** (§5) for users and sessions. The MCP
+endpoint is the one route the gateway forwards to nginx for a **non-ingress** peer: nginx proxies
+`/mcp` to the loopback mcp server, so `POST /mcp` works on 8099 while direct access stays off
+(§6.1).
 
 **Why a unix socket and not a loopback-only route:** nginx is itself on loopback and forwards
 every `/api/*` target, so "is the peer 127.0.0.1?" is true for every ingress and LAN request.
@@ -64,6 +69,7 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 | `/run/opengym/internal.sock` | api internal listener (§5); `/run/opengym` created 0700 `app:app` by the entrypoint |
 | `/app/` | upstream api (patched at build) — `queue.js` etc. importable from here |
 | `/opt/gateway/` | gateway package (`src/`, no `node_modules` needed — zero deps) |
+| `/opt/opengym-mcp/` | the MCP-over-HTTPS server and what it imports, in upstream's own layout (`mcp/`, `frontend/`, `api/`) copied whole from the mcp image; run as `app`, read-only |
 | `/usr/share/nginx/html/` | upstream SPA + `exercise-media/` (copied from the web image) |
 | `/usr/share/nginx/html/ha-ingress.js` | the gateway's page-side upload script (`gateway/web/`), loaded first by `index.html` (§6 step 6) |
 | `/opt/opengym/integration/opengym/` | root-owned copy of `custom_components/opengym` minus `tests/` and byte-code; kept identical by `tools/sync_integration.py`, enforced by `tools/addon_lint.py` |
@@ -80,17 +86,26 @@ The gateway **overwrites** `X-Forwarded-For` and `X-Real-IP` with the socket pee
 `RP_ID=$RESOLVED_RP_ID` `RP_NAME=openGym` `FIRST_USER_ADMIN=1` `TRUST_PROXY=1`
 `PASSWORD_LOGIN` `INVITE_ONLY` `ALLOW_GUEST` (each `1`/`0` from RESOLVED_*)
 `DEFAULT_LANG` (only exported when non-empty) `HA_INTERNAL_SOCKET=/run/opengym/internal.sock`
-`NODE_ENV=production`. Upstream's media limits are left at their defaults (videos 100 MB as of openGym 1.4.5): big
+`MCP=on` (the app then shows the MCP address under Settings → API tokens, §6.1) `NODE_ENV=production`.
+Upstream's media limits are left at their defaults (videos 100 MB as of openGym 1.4.5): big
 uploads stream through ingress (§6 step 6) instead of being capped.
+
+### mcp (set by the entrypoint)
+`MCP_PORT=3100` `OPENGYM_API_URL=http://127.0.0.1:3000` `MCP_PATH=/mcp`
+`ORIGIN=$RESOLVED_ORIGIN` `BASE_PATH=` `NODE_ENV=production`. It holds no data and no secret: it
+reads and writes only through the api, with each request's own scoped token.
 
 ### nginx template render (as root, before dropping privileges)
 `envsubst` with exactly the `${NAME}`s the template uses (never a bare envsubst: nginx's own
 `$variables` would be blanked). The add-on sets `NGINX_PORT=127.0.0.1:8080 BACKEND=127.0.0.1
-PORT=3000 RESOLVER=127.0.0.11 CF_CONNECTING_IP= BASE_PATH= MEDIA_UPLOAD_MAX=48m`; every other
+PORT=3000 RESOLVER=127.0.0.11 MCP_BACKEND=127.0.0.1 MCP_PORT=3100 CF_CONNECTING_IP= BASE_PATH=
+MEDIA_UPLOAD_MAX=48m`; every other
 name takes the default upstream's web image declares in its `ENV` (recorded at build in
 `template-defaults.env`; 1.4.2's `CONTENT_SECURITY_POLICY`). A name neither sets stops the add-on
 at boot, by name. The gateway turns that policy's `frame-ancestors 'none'` into `'self'` on
-ingress responses only (§6).
+ingress responses only (§6). `MCP_BACKEND`/`MCP_PORT` are overridden from upstream's `mcp:3100`
+to `127.0.0.1:3100`, because the template resolves them through Docker's DNS, which an add-on
+does not have.
 
 ### gateway
 `GATEWAY_PORT=8099` `OPENGYM_DATA_DIR=/data/opengym` `GATEWAY_STATE_DIR=/data/gateway`
@@ -187,7 +202,8 @@ The request body's framing is kept: when the incoming request carried `Transfer-
 body never reaches nginx unframed and cannot be read as a second request on the pooled
 connection.
 
-Own routes (all peers): `GET /healthz` (proxies api `/api/health` status + body), `/ha/v1/*` (§7).
+Own routes (all peers): `GET /healthz` (proxies api `/api/health` status + body), `/ha/v1/*` (§7),
+and `POST/GET /mcp` (the MCP-over-HTTPS endpoint, §6.1 — proxied to nginx for **every** peer).
 Everything else proxies to nginx. On **every** proxied request: delete all `X-Remote-User-*`
 headers and `X-OpenGym-Method` before forwarding; overwrite `X-Forwarded-For`/`X-Real-IP` with
 the socket peer; drop `CF-Connecting-IP`.
@@ -228,9 +244,25 @@ the socket peer; drop `CF-Connecting-IP`.
    check and its media checks (type sniff, sha256, size, length and quota) then run on that `PUT`
    exactly as on a direct upload.
 
-**Other peers:** `RESOLVED_DIRECT_ACCESS=true` → proxy untouched (upstream sign-in and headers
-apply). Off → `403` JSON `{"error":"Direct access is turned off. Open openGym from the Home
+**Other peers:** `/mcp` → proxied to nginx (§6.1), because the endpoint authenticates itself with a
+scoped token. Anything else: `RESOLVED_DIRECT_ACCESS=true` → proxy untouched (upstream sign-in and
+headers apply). Off → `403` JSON `{"error":"Direct access is turned off. Open openGym from the Home
 Assistant sidebar, or set the add-on's external_url option."}`.
+
+### 6.1 MCP (`/mcp`)
+
+openGym ships an optional MCP-over-HTTPS server (upstream `docs/MCP_REMOTE.md`) that exposes its
+tools to an AI assistant. The add-on runs it as its own loopback process (§1, §3) and nginx
+proxies `= /mcp` to `127.0.0.1:3100` with upstream's own template location. The single gateway
+change is the route above: a non-ingress peer's `/mcp` is forwarded to nginx **before** the
+direct-access check. That is safe by construction — the endpoint rejects anything but a valid
+`ogt_…` scoped token on every request (`mcp/src/http.js`, validated by the api), it is stateless
+and holds no data or secret, and it is not published outside the container network. Under ingress
+the gateway's `ingress()` strips `Authorization`, so `/mcp` there answers the MCP server's own 401;
+an assistant reaches it directly on the add-on's address (`http://<add-on hostname>:8099/mcp`).
+
+`MCP=on` is set for the api (§3) so Settings → API tokens shows the address and the "use your
+subscription" page. The app's own routes and the UI are untouched by this route.
 
 ## 7. Integration API (`/ha/v1`)
 

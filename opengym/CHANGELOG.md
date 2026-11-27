@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- MCP: openGym's MCP-over-HTTPS server now runs in the add-on, so an AI assistant can read your
+  training and, with a token that allows it, log a workout you describe. Make a token under
+  Settings -> API tokens and point the assistant at `http://<add-on hostname>:8099/mcp`.
+- `/mcp` is the one openGym route reachable without Home Assistant's sign-in: it authenticates every
+  request with its own scoped token. The rest of the add-on keeps the direct-access-off default.
+
 ## 0.1.5
 
 - openGym 1.4.5 ([what's new](https://github.com/DuarteSantos8/openGym/releases/tag/v1.4.5)).

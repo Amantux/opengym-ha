@@ -27,6 +27,7 @@ trap 'STOP_REQUESTED=1' TERM INT
 API_PID=""
 NGINX_PID=""
 GATEWAY_PID=""
+MCP_PID=""
 DISCOVERY_PID=""
 SLEEP_PID=""
 
@@ -38,7 +39,7 @@ fail() { echo "openGym: $*" >&2; exit 1; }
 # `timeout` escalates to SIGKILL if something hangs.
 stop_children() {
   trap 'STOP_REQUESTED=1' TERM INT
-  for pid in "$GATEWAY_PID" "$NGINX_PID" "$API_PID" "$DISCOVERY_PID" "$SLEEP_PID"; do
+  for pid in "$GATEWAY_PID" "$MCP_PID" "$NGINX_PID" "$API_PID" "$DISCOVERY_PID" "$SLEEP_PID"; do
     if [ -n "$pid" ]; then kill -TERM "$pid" 2>/dev/null || true; fi
   done
   # `wait` with no operand returns 0 once no child is left, >128 when a signal cut it short.
@@ -112,9 +113,25 @@ start_api() {
     INVITE_ONLY="$RESOLVED_INVITE_ONLY" \
     ALLOW_GUEST="$RESOLVED_ALLOW_GUEST" \
     HA_INTERNAL_SOCKET=/run/opengym/internal.sock \
+    MCP=on \
     NODE_ENV=production \
     "$@" \
     gosu app node server.js
+}
+
+# Upstream's MCP-over-HTTPS server (docs/MCP_REMOTE.md), on loopback like the api. It holds no
+# data and no secret: every request carries a scoped token from Settings -> API tokens, and every
+# read and write goes through the api with it. nginx proxies /mcp to it, and the gateway lets
+# that one path through from the local network (gateway.js). Same exec rule as start_api.
+start_mcp() {
+  exec env -u SUPERVISOR_TOKEN \
+    MCP_PORT=3100 \
+    OPENGYM_API_URL=http://127.0.0.1:3000 \
+    MCP_PATH=/mcp \
+    ORIGIN="$RESOLVED_ORIGIN" \
+    BASE_PATH='' \
+    NODE_ENV=production \
+    gosu app node /opt/opengym-mcp/mcp/src/http.js
 }
 
 if [ "$(id -u)" != 0 ]; then
@@ -268,12 +285,13 @@ NGINX_TEMPLATE=/etc/opengym/nginx/default.conf.template
 NGINX_DEFAULTS=/etc/opengym/nginx/template-defaults.env
 (
   export NGINX_PORT=127.0.0.1:8080 BACKEND=127.0.0.1 PORT=3000 RESOLVER=127.0.0.11 \
+    MCP_BACKEND=127.0.0.1 MCP_PORT=3100 \
     CF_CONNECTING_IP='' BASE_PATH='' MEDIA_UPLOAD_MAX=48m
   vars=""
   # shellcheck disable=SC2016 # a literal ${ to match, not an expansion
   for name in $(grep -o '\${[A-Z_][A-Z0-9_]*}' "$NGINX_TEMPLATE" | tr -d '${}' | sort -u); do
     case $name in
-      NGINX_PORT | BACKEND | PORT | RESOLVER | CF_CONNECTING_IP | BASE_PATH | MEDIA_UPLOAD_MAX) ;;
+      NGINX_PORT | BACKEND | PORT | RESOLVER | MCP_BACKEND | MCP_PORT | CF_CONNECTING_IP | BASE_PATH | MEDIA_UPLOAD_MAX) ;;
       *)
         line=$(grep -m 1 "^${name}=" "$NGINX_DEFAULTS") \
           || fail "upstream's nginx template uses \${${name}}, which neither the add-on nor upstream's web image sets"
@@ -316,6 +334,10 @@ gateway_cmd node /opt/gateway/src/server.js &
 GATEWAY_PID=$!
 log "gateway on port 8099 (ingress), nginx on 127.0.0.1:8080."
 
+start_mcp &
+MCP_PID=$!
+log "MCP server on 127.0.0.1:3100, proxied at /mcp."
+
 # Home Assistant discovery: best effort and backgrounded (HA Core may not be up yet; the
 # command retries for about two minutes on its own, contract §8). It always exits 0 and logs
 # why when it skips, so the loop below only reports a crash.
@@ -355,6 +377,7 @@ while true; do
   check_server "the openGym api" "$API_PID"
   check_server "nginx" "$NGINX_PID"
   check_server "the gateway" "$GATEWAY_PID"
+  check_server "the openGym MCP server" "$MCP_PID"
   if [ -n "$DISCOVERY_PID" ] && ! kill -0 "$DISCOVERY_PID" 2>/dev/null; then
     status=0
     wait "$DISCOVERY_PID" || status=$?

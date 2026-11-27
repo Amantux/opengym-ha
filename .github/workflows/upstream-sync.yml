@@ -54,6 +54,7 @@ jobs:
       branch: ${{ steps.check.outputs.branch }}
       api_digest: ${{ steps.check.outputs.api_digest }}
       web_digest: ${{ steps.check.outputs.web_digest }}
+      mcp_digest: ${{ steps.check.outputs.mcp_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -127,9 +128,10 @@ jobs:
           VERSION: ${{ needs.check.outputs.version }}
           API_DIGEST: ${{ needs.check.outputs.api_digest }}
           WEB_DIGEST: ${{ needs.check.outputs.web_digest }}
+          MCP_DIGEST: ${{ needs.check.outputs.mcp_digest }}
         run: |
           python3 tools/upstream_sync.py apply --version "$VERSION" \
-            --api-digest "$API_DIGEST" --web-digest "$WEB_DIGEST"
+            --api-digest "$API_DIGEST" --web-digest "$WEB_DIGEST" --mcp-digest "$MCP_DIGEST"
       - name: Push the branch
         env:
           BRANCH: ${{ needs.check.outputs.branch }}
@@ -140,7 +142,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add opengym/Dockerfile opengym/CHANGELOG.md
-          git commit -q -m "$SUBJECT" -m "Made by the Upstream sync workflow: both images at ${VERSION}, by digest, as multi-arch indexes, and a changelog line. CI lands it on main if every job passes. Release notes: https://github.com/DuarteSantos8/openGym/releases/tag/v${VERSION}"
+          git commit -q -m "$SUBJECT" -m "Made by the Upstream sync workflow: all images at ${VERSION}, by digest, as multi-arch indexes, and a changelog line. CI lands it on main if every job passes. Release notes: https://github.com/DuarteSantos8/openGym/releases/tag/v${VERSION}"
           # Force: a branch left from an older main is replaced by one made from this main.
           git push --force origin "HEAD:refs/heads/${BRANCH}"
       - name: Test it with CI (which lands it if every job passes)

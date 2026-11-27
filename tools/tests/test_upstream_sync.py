@@ -25,7 +25,8 @@ import upstream_sync  # noqa: E402
 
 API_142 = "sha256:" + "a" * 64
 WEB_142 = "sha256:" + "b" * 64
-DIGESTS = {"api": API_142, "web": WEB_142}
+MCP_142 = "sha256:" + "c" * 64
+DIGESTS = {"api": API_142, "web": WEB_142, "mcp": MCP_142}
 
 
 def index(*platforms: tuple[str, str], media: str = upstream_sync.INDEX_TYPES[0]) -> bytes:
@@ -48,7 +49,7 @@ class FakeUpstream:
 
     def __init__(self, tag="v1.4.2", manifests=None):
         self.tag = tag
-        self.manifests = {"api": BOTH, "web": BOTH} if manifests is None else manifests
+        self.manifests = {"api": BOTH, "web": BOTH, "mcp": BOTH} if manifests is None else manifests
 
     def __call__(self, url: str, headers: dict[str, str]) -> bytes:
         if url.endswith("/releases/latest"):
@@ -98,13 +99,14 @@ class Versions(unittest.TestCase):
 
 
 class Rewrite(Tree):
-    def test_apply_pins_both_images_and_the_version(self):
+    def test_apply_pins_all_images_and_the_version(self):
         old, subject = upstream_sync.apply(self.root, "1.4.2", DIGESTS)
         self.assertEqual((old, subject), ("1.4.1", "Upstream: openGym 1.4.1 → 1.4.2"))
         self.assertEqual(addon_lint.upstream_version(self.root, []), "1.4.2")
         dockerfile = self.read(addon_lint.DOCKERFILE)
         self.assertIn(f"opengym-api:1.4.2@{API_142}", dockerfile)
         self.assertIn(f"opengym-web:1.4.2@{WEB_142}", dockerfile)
+        self.assertIn(f"opengym-mcp:1.4.2@{MCP_142}", dockerfile)
         # A reference in a comment is not a pin, and stays as it was.
         self.assertIn("# Moved off ghcr.io/duartesantos8/opengym-web:1.3.0", dockerfile)
 
@@ -113,7 +115,7 @@ class Rewrite(Tree):
         upstream_sync.apply(self.root, "1.4.2", DIGESTS)
         after = self.read(addon_lint.DOCKERFILE).splitlines()
         changed = [b for b, a in zip(before, after, strict=True) if a != b]
-        self.assertEqual(len(changed), 3, changed)
+        self.assertEqual(len(changed), 4, changed)
 
     def test_refuses_an_older_or_equal_release(self):
         for version in ("1.4.1", "1.4.0"):
@@ -122,7 +124,7 @@ class Rewrite(Tree):
 
     def test_refuses_a_malformed_digest(self):
         with self.assertRaisesRegex(upstream_sync.SyncError, "opengym-web"):
-            upstream_sync.apply(self.root, "1.4.2", {"api": API_142, "web": "sha256:abc"})
+            upstream_sync.apply(self.root, "1.4.2", {**DIGESTS, "web": "sha256:abc"})
 
     def test_refuses_a_second_api_from_line(self):
         text = self.read(addon_lint.DOCKERFILE)
@@ -197,22 +199,24 @@ class Check(Tree):
     def tried_here(self, branch):
         return self.HEAD, self.TIP
 
-    def test_proposes_a_newer_release_with_both_images(self):
+    def test_proposes_a_newer_release_with_all_images(self):
         out = self.check()
         digest = "sha256:" + hashlib.sha256(BOTH).hexdigest()
         self.assertEqual(out, {"current": "1.4.1", "version": "1.4.2", "action": "propose",
                                "branch": "upstream/opengym-1.4.2", "api_digest": digest,
-                               "web_digest": digest, "subject": "Upstream: openGym 1.4.1 → 1.4.2"})
+                               "web_digest": digest, "mcp_digest": digest,
+                               "subject": "Upstream: openGym 1.4.1 → 1.4.2"})
 
     def test_waits_for_images(self):
-        for manifests in ({"api": BOTH, "web": None}, {"api": index(("linux", "amd64")), "web": BOTH}):
+        for manifests in ({"api": BOTH, "web": None, "mcp": BOTH},
+                          {"api": index(("linux", "amd64")), "web": BOTH, "mcp": BOTH}):
             with self.subTest(manifests=manifests):
                 out = self.check(FakeUpstream(manifests=manifests))
                 self.assertEqual(out["action"], "wait")
                 self.assertNotIn("report", out)
 
     def test_reports_images_still_missing_hours_later(self):
-        out = self.check(FakeUpstream(manifests={"api": index(("linux", "amd64")), "web": BOTH}),
+        out = self.check(FakeUpstream(manifests={"api": index(("linux", "amd64")), "web": BOTH, "mcp": BOTH}),
                          now=PUBLISHED_AT + upstream_sync.STALLED_AFTER + 3600)
         self.assertEqual(out["action"], "wait")
         self.assertIn("opengym-api still does not serve", out["report"])
@@ -225,7 +229,7 @@ class Check(Tree):
     def test_notices_a_republished_digest_without_following_it(self):
         out = self.check(FakeUpstream(tag="v1.4.1"))
         self.assertEqual(out["action"], "none")
-        self.assertIn("re-published opengym-api, opengym-web:1.4.1", out["reason"])
+        self.assertIn("re-published opengym-api, opengym-web, opengym-mcp:1.4.1", out["reason"])
 
     def ci(self, status="completed", conclusion=""):
         return {"status": status, "conclusion": conclusion, "url": "https://example.invalid/run/1"}

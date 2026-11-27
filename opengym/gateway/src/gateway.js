@@ -2,6 +2,7 @@
 //
 //   /healthz            -> the api's own health check, for every peer
 //   /ha/v1/*            -> the integration API (Bearer integration token), for every peer
+//   /mcp                -> the MCP-over-HTTPS server (token per request), for every peer
 //   ingress peer        -> session for the HA user, then nginx, with framing allowed for HA
 //   any other peer      -> nginx untouched when direct access is on, else 403
 import http from 'node:http';
@@ -26,6 +27,12 @@ export function socketPeer(req) {
 }
 
 export const DIRECT_OFF = { error: "Direct access is turned off. Open openGym from the Home Assistant sidebar, or set the add-on's external_url option." };
+// The MCP endpoint (docs/MCP_REMOTE.md). nginx proxies it to the loopback MCP server, which
+// authenticates every request with its own scoped token (Settings -> API tokens). It is therefore
+// NOT part of the ingress-only surface: Home Assistant's own containers and the local network
+// reach it on 8099 while direct access stays off, which is exactly how upstream serves it. The
+// app's own routes (/api, the UI) are unaffected and keep the direct-access rule.
+export const MCP_PATH = '/mcp';
 const UNAUTHORIZED = { error: 'unauthorized' };
 const NOT_FOUND = { error: 'not found' };
 
@@ -150,6 +157,9 @@ export function createGateway({ config, internal, effectiveRoutineId, peerOf = s
       if (pathname === '/ha/v1' || pathname.startsWith('/ha/v1/')) return await integration(req, res, pathname);
       const peer = peerOf(req);
       if (peer === INGRESS_PEER) return await ingress(req, res, pathname, peer);
+      // Not ingress. /mcp authenticates each request with its own scoped token, so it is served
+      // to any peer; everything else needs direct access turned on.
+      if (pathname === MCP_PATH) return proxyRequest(req, res, { target: web, headers: forwardHeaders(req, peer), log });
       if (!config.directAccess) return sendJson(res, 403, DIRECT_OFF);
       return proxyRequest(req, res, { target: web, headers: forwardHeaders(req, peer), log });
     } catch (err) {

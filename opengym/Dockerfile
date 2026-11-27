@@ -4,10 +4,12 @@
 # the official upstream images pinned by digest. The exercise media bundled in the web image
 # is licensed to openGym only, so this repository never publishes an image that carries it.
 #
-# Both upstream images are named in plain FROM lines, which the Upstream sync workflow moves
+# The three upstream images are named in plain FROM lines, which the Upstream sync workflow moves
 # together with OPENGYM_VERSION below on each upstream release (tools/upstream_sync.py; nothing
-# else in this file may change in that commit). Each digest is a multi-arch index (linux/amd64
-# and linux/arm64), so one reference serves both add-on archs.
+# else in this file may change in that commit). The api image is the base; the web image is a
+# source of files (the SPA, the media, the nginx template); the mcp image is a source of files
+# (the MCP-over-HTTPS server and the app helpers it imports). Each digest is a multi-arch index
+# (linux/amd64 and linux/arm64), so one reference serves both add-on archs.
 # There is no build.yaml and no ARG BUILD_FROM, on purpose: the Supervisor deprecated
 # build.yaml in 2026.04, and an older Supervisor that finds no build.yaml passes
 # BUILD_FROM=<Home Assistant's own base image>, which would replace an ARG's default. With no
@@ -24,6 +26,12 @@ RUN for name in $(grep -o '\${[A-Z_][A-Z0-9_]*}' /etc/nginx/templates/default.co
       | tr -d '${}' | sort -u); do \
       if value=$(printenv "$name"); then printf '%s=%s\n' "$name" "$value"; fi; \
     done > /tmp/opengym-template-defaults.env
+
+# The optional MCP-over-HTTPS server (docs/MCP_REMOTE.md), as a source of files: the add-on runs
+# it itself as a loopback process (the entrypoint) and the gateway proxies /mcp to it, so this
+# adds no container of its own. It imports the app's own training helpers (frontend/src/lib and
+# api/coach/core), which is why upstream publishes it as an image and not a folder.
+FROM ghcr.io/duartesantos8/opengym-mcp:1.4.5@sha256:f1f1a48ac79f8c7ea762ca30770764ec961e7c6901b28dd97dff47170f8af5c9 AS mcp
 
 FROM ghcr.io/duartesantos8/opengym-api:1.4.5@sha256:397c83e9ac33a413bc8f21e66b2e55038100fc7f9da900d80be28b30fbb12ea8
 
@@ -71,6 +79,11 @@ RUN apk add --no-cache nginx gettext-envsubst gosu tzdata \
 # it an ES module. Its tests stay out of the image.
 COPY gateway/package.json /opt/gateway/package.json
 COPY gateway/src/ /opt/gateway/src/
+
+# The MCP server (mcp/src/http.js) and everything it imports, kept in upstream's own layout under
+# /opt/opengym-mcp (mcp/, frontend/, api/) so its relative imports resolve. Root-owned like the
+# gateway; it runs as `app` and only reads.
+COPY --from=mcp /app /opt/opengym-mcp
 
 COPY --from=web /usr/share/nginx/html/ /usr/share/nginx/html/
 # The gateway's page-side half (contract §6 step 6): loaded before the app, so the app's photo
