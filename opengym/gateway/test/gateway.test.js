@@ -64,12 +64,12 @@ test('the production peer is the socket address with ::ffff: removed', () => {
   assert.equal(INGRESS_PEER, '172.30.32.2');
 });
 
-test('direct access off: 403 for everything except /healthz and /ha/v1/*', async () => {
+test('direct access off: 403 for everything except /healthz, /ha/v1/* and /mcp', async () => {
   const { web, internal, gw } = await setup({ peer: '192.168.1.50', directAccess: false, api: {
     'GET /api/health': async () => [200, { ok: true, users: 1, writable: true }],
   } });
   for (const [method, path] of [['GET', '/'], ['GET', '/index.html'], ['GET', '/api/me'], ['POST', '/api/register/options'],
-    ['GET', '/ha/v1x'], ['GET', '/healthz/'], ['GET', '/exercise-media/x.webp']]) {
+    ['GET', '/ha/v1x'], ['GET', '/healthz/'], ['GET', '/exercise-media/x.webp'], ['POST', '/mcp/'], ['GET', '/mcpx']]) {
     const r = await request(gw.url, { method, path, headers: FORGED });
     assert.equal(r.status, 403, `${method} ${path}`);
     assert.deepEqual(json(r), DIRECT_OFF);
@@ -79,6 +79,14 @@ test('direct access off: 403 for everything except /healthz and /ha/v1/*', async
   assert.equal((await request(gw.url, { path: '/healthz' })).status, 200);
   assert.equal((await request(gw.url, { path: '/ha/v1/health' })).status, 200);
   assert.equal((await request(gw.url, { path: '/ha/v1/profiles', headers: [['Authorization', `Bearer ${TOKEN}`]] })).status, 200);
+  // /mcp is proxied to nginx for every peer: the endpoint authenticates each request with its own
+  // scoped token, so it is not part of the ingress-only surface (contract §6.1).
+  const mcp = await request(gw.url, { method: 'POST', path: '/mcp', headers: [['Authorization', 'Bearer ogt_x']] });
+  assert.equal(mcp.status, 200);
+  assert.equal(web.seen.length, 1, 'exactly /mcp reached nginx');
+  assert.equal(web.seen[0].url, '/mcp');
+  assert.equal(web.seen[0].headers.authorization, 'Bearer ogt_x', 'the token passes through untouched');
+  assert.equal((await request(gw.url, { method: 'POST', path: '/mcp/health' })).status, 403, 'only the exact path');
 });
 
 test('ingress without identity: client session cookies and Authorization are stripped, other cookies kept, no internal call', async () => {

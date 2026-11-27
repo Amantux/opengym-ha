@@ -68,10 +68,11 @@ HACS_KEYS = {
     "zip_release": bool,
 }
 
-# The two official upstream images. The add-on is built FROM the api image and copies the SPA
-# (and the licensed exercise media) out of the web image, so both must be the same release.
+# The three official upstream images, all one release. The add-on is built FROM the api image,
+# copies the SPA (and the licensed exercise media) out of the web image, and the MCP-over-HTTPS
+# server out of the mcp image.
 UPSTREAM_IMAGE = re.compile(
-    r"ghcr\.io/duartesantos8/opengym-(?P<part>api|web)"
+    r"ghcr\.io/duartesantos8/opengym-(?P<part>api|web|mcp)"
     r":(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]*)"
     r"(?:@(?P<digest>sha256:[0-9a-f]{64}))?"
 )
@@ -114,10 +115,10 @@ def _read(root: Path, rel: str, problems: list[Problem]) -> str | None:
 
 
 def upstream_version(root: Path, problems: list[Problem]) -> str | None:
-    """Return the openGym release both upstream images carry, or None with problems appended.
+    """Return the openGym release all upstream images carry, or None with problems appended.
 
     CI checks the upstream source out at this release, so the gateway and patch suites always
-    test the code the image actually ships; an Upstream sync bump moves both together.
+    test the code the image actually ships; an Upstream sync bump moves them together.
     """
     found: list[Problem] = []
     text = _read(root, DOCKERFILE, found)
@@ -130,13 +131,14 @@ def upstream_version(root: Path, problems: list[Problem]) -> str | None:
         refs += [(DOCKERFILE, m["part"], m["tag"], m["digest"]) for m in UPSTREAM_IMAGE.finditer(line)]
         versions += [(DOCKERFILE, m["value"]) for m in OPENGYM_VERSION.finditer(line)]
 
-    for part in ("api", "web"):
+    for part in ("api", "web", "mcp"):
         if not any(r[1] == part for r in refs):
             found.append(Problem(
                 DOCKERFILE,
                 f"no ghcr.io/duartesantos8/opengym-{part} image reference found",
-                "the add-on is built from both official upstream images (api as the base, web "
-                "for the SPA and exercise media); reference each as "
+                "the add-on is built from all three official upstream images (api as the base, "
+                "web for the SPA and exercise media, mcp for the MCP-over-HTTPS server); "
+                "reference each as "
                 f"ghcr.io/duartesantos8/opengym-{part}:<version>@sha256:<digest>",
             ))
     for rel, part, tag, digest in refs:
@@ -155,8 +157,8 @@ def upstream_version(root: Path, problems: list[Problem]) -> str | None:
         found.append(Problem(
             DOCKERFILE,
             f"the upstream images carry different version tags ({listed})",
-            "api and web are one upstream release and must move together; bump both to the "
-            "same version, and OPENGYM_VERSION with them",
+            "api, web and mcp are one upstream release and must move together; bump all three to "
+            "the same version, and OPENGYM_VERSION with them",
         ))
 
     if not versions:

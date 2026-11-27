@@ -72,8 +72,10 @@ Things to know:
 
 - **Passkeys need https and are tied to that host name.** Choose it before people register:
   changing `external_url` later stops every passkey made for the old address from working.
-- Without `external_url`, port 8099 refuses everything except Home Assistant itself, even when
-  the port is mapped. This stops other devices on your network from creating profiles.
+- Without `external_url`, port 8099 refuses everything except Home Assistant itself and the MCP
+  endpoint (`/mcp`, see [MCP](#mcp-ai-assistants)) — which authenticates every request with its
+  own token — even when the port is mapped. This stops other devices on your network from
+  creating profiles.
 - In your proxy, let at least 5 MB through on `/api/` (openGym syncs a whole workout history in
   one request) and 48 MB on `/api/media/` (photos and videos of your own exercises). Do not add
   CORS headers or a login page (SSO, forward-auth) in front of `/api/`: openGym answers those
@@ -249,6 +251,25 @@ admin turns it on in **Admin dashboard → AI Coach**.
   root so it can hand each job to a separate user, and this add-on never runs openGym as root.
 
 Provider API keys are stored with your data, encrypted with the add-on's own secret.
+
+## MCP (AI assistants)
+
+openGym can hand its tools to an AI assistant over **MCP**: read your routines, workouts and body
+weight, and, with a token that allows it, log a workout you describe. The add-on runs openGym's
+own MCP-over-HTTPS server itself, so there is nothing extra to install.
+
+1. In openGym, open **Settings → Integrations → API tokens** (or **Use your subscription** to sign
+   a hosted assistant in with openGym instead of a key) and make a token. Tick only what it may see
+   or change; it is shown once and can be revoked there.
+2. Point the assistant at `http://<add-on hostname>:8099/mcp` with the header
+   `Authorization: Bearer ogt_…`. Any client that speaks MCP over HTTP works. Another Home
+   Assistant add-on reaches that host name directly (find it under **Settings → Add-ons → openGym →
+   Info**); a machine on your network needs port 8099 mapped and `external_url` set, as above.
+
+The endpoint is the **one** openGym route reachable without Home Assistant's sign-in, because it
+authenticates every request with its own scoped token. It holds no data and no secret, and
+openGym's own UI and API are unaffected by it. Everything the tools return is sent to whichever AI
+provider the assistant uses.
 
 ## Updates
 

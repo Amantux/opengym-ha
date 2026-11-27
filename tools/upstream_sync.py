@@ -3,14 +3,15 @@
 
     python3 tools/upstream_sync.py check                       # a newer release to propose?
     python3 tools/upstream_sync.py apply --version X.Y.Z \\
-        --api-digest sha256:<hex> --web-digest sha256:<hex>    # pin it (Dockerfile + CHANGELOG)
+        --api-digest sha256:<hex> --web-digest sha256:<hex> --mcp-digest sha256:<hex>
+                                            # pin it (Dockerfile + CHANGELOG)
     python3 tools/upstream_sync.py landable --base <sha> --candidate <sha>
     gh issue list --json number,title | python3 tools/upstream_sync.py resolved --current X.Y.Z
 
 Upstream is not ours, so it cannot tell us it released: the Upstream sync workflow polls. `check`
-asks GitHub for upstream's latest release and GHCR for both images at that tag, and proposes it
-only once both are multi-arch indexes for the two add-on archs (upstream publishes the images a
-few minutes after the release). `apply` makes the one commit a release needs: the two FROM pins,
+asks GitHub for upstream's latest release and GHCR for all three images at that tag, and proposes it
+only once all are multi-arch indexes for the two add-on archs (upstream publishes the images a
+few minutes after the release). `apply` makes the one commit a release needs: the three FROM pins,
 OPENGYM_VERSION and a changelog line. CI tests that commit like any other, and its bump-version
 job lands it on main only if `landable` (run from main's copy of this file, never the branch's)
 finds it is exactly what `apply` makes from main: one commit, those two files, those changes.
@@ -46,7 +47,8 @@ import bump_version
 
 UPSTREAM_REPO = "DuarteSantos8/openGym"
 REGISTRY = "ghcr.io"
-IMAGES = {"api": "duartesantos8/opengym-api", "web": "duartesantos8/opengym-web"}
+IMAGES = {"api": "duartesantos8/opengym-api", "web": "duartesantos8/opengym-web",
+          "mcp": "duartesantos8/opengym-mcp"}
 # The add-on's archs (config.yaml) as OCI platforms: every user builds FROM the same index.
 PLATFORMS = {("linux", "amd64"), ("linux", "arm64")}
 INDEX_TYPES = (
@@ -65,7 +67,7 @@ SYNC_FILES = (addon_lint.DOCKERFILE, bump_version.CHANGELOG)
 TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
 VERSION = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
-# How long a release may go without both images serving both archs before an issue says so.
+# How long a release may go without all images serving both archs before an issue says so.
 STALLED_AFTER = 6 * 3600
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -104,7 +106,7 @@ def commit_subject(old: str, new: str) -> str:
 
 
 def rewrite_dockerfile(text: str, version: str, digests: dict[str, str]) -> str:
-    """Point both upstream FROM lines and OPENGYM_VERSION at `version`; nothing else changes."""
+    """Point every upstream FROM line and OPENGYM_VERSION at `version`; nothing else changes."""
     parse_version(version)
     for part in IMAGES:
         if not DIGEST.fullmatch(digests.get(part, "")):
@@ -160,7 +162,7 @@ def add_changelog_entry(text: str, version: str) -> str:
 
 
 def pinned(dockerfile: str) -> tuple[str, dict[str, str]]:
-    """The version and both digests a Dockerfile pins (the candidate side of `landable`)."""
+    """The version and every image digest a Dockerfile pins (the candidate side of `landable`)."""
     digests: dict[str, str] = {}
     tags = set()
     for line in addon_lint._code_lines(dockerfile):
@@ -376,8 +378,8 @@ def check(root: Path, fetch: Fetch, token: str, tried: Callable[[str], tuple[str
                              "Nothing here needs fixing: each hourly run looks again and proposes it "
                              "once upstream's images are complete")
         return out
-    out.update(action="propose", api_digest=digests["api"], web_digest=digests["web"],
-               subject=commit_subject(current, latest))
+    out.update(action="propose", subject=commit_subject(current, latest))
+    out.update({f"{part}_digest": digests[part] for part in IMAGES})
     return out
 
 
@@ -483,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
     p_apply.add_argument("--version", required=True)
     p_apply.add_argument("--api-digest", required=True)
     p_apply.add_argument("--web-digest", required=True)
+    p_apply.add_argument("--mcp-digest", required=True)
     p_land = sub.add_parser("landable")
     p_land.add_argument("--base", required=True)
     p_land.add_argument("--candidate", required=True)
@@ -498,7 +501,8 @@ def main(argv: list[str] | None = None) -> int:
                        git(root, "rev-parse", "HEAD"), lambda sha: ci_run(http_get, token, repo, sha),
                        time.time()))
         elif args.command == "apply":
-            old, subject = apply(root, args.version, {"api": args.api_digest, "web": args.web_digest})
+            old, subject = apply(root, args.version, {"api": args.api_digest, "web": args.web_digest,
+                                                      "mcp": args.mcp_digest})
             emit({"old": old, "version": args.version, "subject": subject})
         elif args.command == "landable":
             landable(root, args.base, args.candidate)
